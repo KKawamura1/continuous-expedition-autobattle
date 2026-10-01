@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { buy, createGame, pause, refundAtCamp, resume, retreat, step, validateSave, CAMP_INTERVAL, RECOVERY_SECONDS, REVIVE_HP_RATIO, STEP } from '../src/simulation.ts';
+import { buy, createGame, pause, refundAtCamp, resume, retreat, step, CAMP_INTERVAL, RECOVERY_SECONDS, REVIVE_HP_RATIO, STEP } from '../src/simulation.ts';
+import { decodeSave, encodeSave, validateSave } from '../src/save.ts';
 import type { AllyState, EnemyState, GameState } from '../src/types.ts';
 
 function run(s: GameState, seconds: number): void {
@@ -74,13 +75,23 @@ test('a purchase requires pause and refunds only at a reached camp', () => {
 
 test('saved state reloads paused, preserving expedition progress', () => {
   const s = createGame(); resume(s); run(s, 20);
-  const loaded = validateSave(JSON.parse(JSON.stringify(s)));
+  s.effects.push({ x: .2, y: .3, toX: .4, toY: .5, color: '#fff', kind: 'line', life: .2 });
+  s.comparison = { kills: 1, damage: 2, income: 3, velocity: 4, time: 5, name: 'test' };
+  const serialized = encodeSave(s);
+  const persisted = JSON.parse(serialized) as Record<string, unknown>;
+  assert.equal(Object.hasOwn(persisted, 'effects'), false);
+  assert.equal(Object.hasOwn(persisted, 'comparison'), false);
+
+  const loaded = decodeSave(serialized);
   if (!loaded) throw new Error('Expected the saved state to be valid.');
   assert.ok(loaded.paused);
   assert.equal(loaded.distance, s.distance);
   assert.equal(loaded.coins, s.coins);
+  assert.deepEqual(loaded.effects, []);
+  assert.equal(loaded.comparison, null);
   const before = loaded.time; step(loaded);
   assert.equal(loaded.time, before);
+  assert.equal(decodeSave('{invalid json'), null);
   assert.equal(validateSave({ version: 1, distance: 9 }), null);
 });
 
