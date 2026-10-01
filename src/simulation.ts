@@ -4,7 +4,7 @@ import type {
 } from './types.ts';
 
 // The simulation owns all game rules. Rendering and storage never mutate state directly.
-// One screen-height in world coordinates is 40 metres. Positive progress is -y.
+// One world-coordinate unit is 40 metres. Positive progress is -y.
 export const METRES_PER_UNIT = 40;
 export const WORLD_ORIGIN_Y = .77;
 export const CAMERA_FRONT_Y = .4;

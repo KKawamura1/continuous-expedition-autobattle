@@ -1,6 +1,9 @@
 import { ROSTER } from './content.ts';
 import type { GameState } from './types.ts';
 
+// A little extra world height keeps the ranged backline and names in frame.
+const VIEW_HEIGHT = 1.2;
+
 export function createBattleRenderer(canvas: HTMLCanvasElement): { resize: () => void; draw: (game: GameState) => void } {
   const context: CanvasRenderingContext2D = (() => {
     const value = canvas.getContext('2d');
@@ -20,13 +23,13 @@ export function createBattleRenderer(canvas: HTMLCanvasElement): { resize: () =>
     // Only the renderer projects world coordinates; combat never sees screen y.
     const game = {
       ...world,
-      allies: world.allies.map(a => ({ ...a, y: a.y - world.cameraY })),
-      enemies: world.enemies.filter(e => e.y - world.cameraY > -.1 && e.y - world.cameraY < 1.1)
-        .map(e => ({ ...e, y: e.y - world.cameraY })),
-      effects: world.effects.map(f => ({ ...f, y: f.y - world.cameraY, toY: f.toY - world.cameraY }))
+      allies: world.allies.map(a => ({ ...a, y: (a.y - world.cameraY) / VIEW_HEIGHT })),
+      enemies: world.enemies.filter(e => e.y - world.cameraY > -.1 && e.y - world.cameraY < VIEW_HEIGHT + .1)
+        .map(e => ({ ...e, y: (e.y - world.cameraY) / VIEW_HEIGHT })),
+      effects: world.effects.map(f => ({ ...f, y: (f.y - world.cameraY) / VIEW_HEIGHT, toY: (f.toY - world.cameraY) / VIEW_HEIGHT }))
     };
-    const frontY = world.frontline - world.cameraY;
-    const t = -world.cameraY;
+    const frontY = (world.frontline - world.cameraY) / VIEW_HEIGHT;
+    const t = -world.cameraY / VIEW_HEIGHT;
     const bg = context.createLinearGradient(0, 0, 0, 1);
     bg.addColorStop(0, '#344251'); bg.addColorStop(.55, '#263641'); bg.addColorStop(1, '#192b35');
     context.fillStyle = bg; context.fillRect(0, 0, 1, 1);
