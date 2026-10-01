@@ -371,7 +371,9 @@ export function step(s: GameState, dt = STEP): void {
     s.campSnapshot = snapshot(s);
     log(s, `${nextCamp}mの中継拠点に到達。遠征資金を組み直せる。`);
   } else {
-    const inDanger = s.peakSinceCamp > s.camp + 65 && (s.distance < s.camp + 18 || totalHp(s) < maxHp * .19);
+    const hasDownedAlly = s.allies.some(a => a.status === 'downed');
+    const inDanger = s.peakSinceCamp > s.camp + 65
+      && (hasDownedAlly || s.distance < s.camp + 18 || totalHp(s) < maxHp * .19);
     if (!inDanger) s.dangerAcknowledged = false;
     else if (!s.dangerAcknowledged) {
       s.paused = true; s.pauseReason = 'danger'; s.dangerAcknowledged = true;

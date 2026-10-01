@@ -227,6 +227,29 @@ test('an attack starts the visible 9.5 second recovery timer', () => {
   assert.equal(hibana.reviveIn, RECOVERY_SECONDS);
 });
 
+test('the first knockout pauses a proven run early enough to adjust, then resumes normally', () => {
+  const s = createGame();
+  s.distance = 66;
+  s.best = 66;
+  s.peakSinceCamp = 66;
+  s.enemies = [staticEnemy(.23, .71, 10, 0)];
+  const hibana = s.allies.find(ally => ally.id === 'hibana')!;
+  hibana.hp = 1;
+  resume(s);
+  step(s, STEP);
+
+  assert.equal(hibana.status, 'downed');
+  assert.equal(s.pauseReason, 'danger');
+  assert.equal(s.paused, true);
+  assert.equal(s.allies.filter(ally => ally.status === 'downed').length, 1);
+
+  resume(s);
+  run(s, 1);
+  assert.equal(s.paused, false, 'one knockout should not cause repeated pauses in the same danger episode');
+  assert.equal(s.pauseReason, null);
+  assert.ok(hibana.reviveIn < RECOVERY_SECONDS);
+});
+
 test('collapse ignores danger acknowledgement and retreat restores the saved camp state', () => {
   for (const acknowledged of [false, true]) {
     const s = createGame();
