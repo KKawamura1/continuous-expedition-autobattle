@@ -111,12 +111,13 @@ export interface Comparison extends Rates {
 }
 
 export interface GameState {
-  version: 2;
+  version: 3;
   seed: number;
   nextId: number;
   time: number;
   distance: number;
   best: number;
+  peakSinceCamp: number;
   camp: number;
   velocity: number;
   kills: number;

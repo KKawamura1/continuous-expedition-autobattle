@@ -70,7 +70,7 @@ export function price(s: GameState, id: string): number {
 
 export function createGame(seed = 194): GameState {
   return {
-    version: 2, seed: seed >>> 0, nextId: 1, time: 0, distance: 0, best: 0, camp: 0,
+    version: 3, seed: seed >>> 0, nextId: 1, time: 0, distance: 0, best: 0, peakSinceCamp: 0, camp: 0,
     velocity: 0, kills: 0, earnings: 0, coins: 0, spent: 0, upgrades: {},
     allies: ROSTER.map(a => ({ id: a.id, x: a.x, y: a.y, hp: a.hp, maxHp: a.hp, status: 'active', reviveIn: 0, shield: 0, cooldown: .3, casts: 0 })),
     enemies: [], effects: [], spawnIn: 1, paused: true, pauseReason: 'start', dangerAcknowledged: false, speed: 1,
@@ -360,16 +360,18 @@ export function step(s: GameState, dt = STEP): void {
   s.velocity += (target - s.velocity) * Math.min(1, dt * 1.15);
   s.distance = Math.max(s.camp, s.distance + s.velocity * dt);
   s.best = Math.max(s.best, s.distance);
+  s.peakSinceCamp = Math.max(s.peakSinceCamp, s.distance);
   const nextCamp = (Math.floor(s.camp / CAMP_INTERVAL) + 1) * CAMP_INTERVAL;
   if (s.distance >= nextCamp) {
-    s.distance = nextCamp; s.camp = nextCamp; s.velocity = 0; s.paused = true; s.pauseReason = 'camp';
+    s.distance = nextCamp; s.camp = nextCamp; s.peakSinceCamp = nextCamp;
+    s.velocity = 0; s.paused = true; s.pauseReason = 'camp';
     s.dangerAcknowledged = false;
     s.enemies = []; s.effects = []; s.spawnIn = .8;
     for (const a of s.allies) resetAlly(a);
     s.campSnapshot = snapshot(s);
     log(s, `${nextCamp}mの中継拠点に到達。遠征資金を組み直せる。`);
   } else {
-    const inDanger = s.best > s.camp + 65 && (s.distance < s.camp + 18 || totalHp(s) < maxHp * .19);
+    const inDanger = s.peakSinceCamp > s.camp + 65 && (s.distance < s.camp + 18 || totalHp(s) < maxHp * .19);
     if (!inDanger) s.dangerAcknowledged = false;
     else if (!s.dangerAcknowledged) {
       s.paused = true; s.pauseReason = 'danger'; s.dangerAcknowledged = true;
@@ -383,7 +385,8 @@ function snapshot(s: GameState): CampSnapshot {
 export function retreat(s: GameState): boolean {
   if (!s.paused || s.pauseReason === 'start') return false;
   const saved = s.campSnapshot || { camp: 0, coins: 0, spent: 0, upgrades: {}, earnings: 0, kills: 0 };
-  s.distance = saved.camp; s.camp = saved.camp; s.coins = saved.coins; s.spent = saved.spent;
+  s.distance = saved.camp; s.camp = saved.camp; s.peakSinceCamp = saved.camp;
+  s.coins = saved.coins; s.spent = saved.spent;
   s.upgrades = { ...saved.upgrades }; s.earnings = saved.earnings; s.kills = saved.kills;
   s.enemies = []; s.effects = []; s.spawnIn = .8; s.velocity = 0; s.rates = { kills: 0, damage: 0, income: 0 };
   s.stats = { kills: 0, damage: 0, income: 0, collisions: 0, counter: 0, period: 0 };
@@ -496,10 +499,16 @@ function parseStats(raw: unknown): Stats | null {
   return { ...rates, collisions: raw.collisions as number, counter: raw.counter as number, period: raw.period as number };
 }
 export function validateSave(raw: unknown): GameState | null {
-  if (!isRecord(raw) || (raw.version !== 1 && raw.version !== 2)) return null;
+  if (!isRecord(raw) || (raw.version !== 1 && raw.version !== 2 && raw.version !== 3)) return null;
   const legacySave = raw.version === 1;
   const numbers = ['seed', 'nextId', 'time', 'distance', 'best', 'camp', 'velocity', 'kills', 'earnings', 'coins', 'spent', 'spawnIn'];
   if (!numbers.every(field => isFiniteNumber(raw[field]))) return null;
+  const migratedPeak = Math.max(raw.camp as number, raw.distance as number,
+    raw.pauseReason === 'danger' ? (raw.camp as number) + 66 : raw.camp as number);
+  const peakSinceCamp = raw.peakSinceCamp === undefined && raw.version !== 3
+    ? migratedPeak
+    : raw.peakSinceCamp;
+  if (!isFiniteNumber(peakSinceCamp) || peakSinceCamp < (raw.camp as number)) return null;
   if (!Array.isArray(raw.allies) || raw.allies.length !== ROSTER.length) return null;
   if (!Array.isArray(raw.enemies)) return null;
   const allies = raw.allies.map((ally, index) => parseAlly(ally, ROSTER[index].id, legacySave));
@@ -519,8 +528,9 @@ export function validateSave(raw: unknown): GameState | null {
   const collapsed = (allies as AllyState[]).every(ally => ally.status === 'downed');
   if (!collapsed && raw.pauseReason === 'collapse') return null;
   return {
-    version: 2, seed: (raw.seed as number) >>> 0, nextId: raw.nextId as number,
+    version: 3, seed: (raw.seed as number) >>> 0, nextId: raw.nextId as number,
     time: raw.time as number, distance: raw.distance as number, best: raw.best as number,
+    peakSinceCamp,
     camp: raw.camp as number, velocity: raw.velocity as number, kills: raw.kills as number,
     earnings: raw.earnings as number, coins: raw.coins as number, spent: raw.spent as number,
     upgrades, allies: allies as AllyState[], enemies: enemies as EnemyState[], effects: [],

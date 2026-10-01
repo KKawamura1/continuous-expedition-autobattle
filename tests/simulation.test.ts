@@ -198,6 +198,20 @@ test('a downed ally cannot attack and returns after the recovery timer', () => {
   assert.equal(recovering.hp, recovering.maxHp * REVIVE_HP_RATIO);
   assert.equal(recovering.x, .23);
   assert.equal(recovering.y, .8);
+
+  const holdingFront = createGame();
+  holdingFront.spawnIn = 100;
+  holdingFront.enemies = [
+    staticEnemy(.37, .72, 3, 0), staticEnemy(.47, .72, 3, .2), staticEnemy(.57, .72, 3, .4),
+    staticEnemy(.67, .72, 3, .6), staticEnemy(.77, .72, 3, .8)
+  ];
+  const returning = holdingFront.allies.find(ally => ally.id === 'genzou')!;
+  down(returning);
+  resume(holdingFront);
+  run(holdingFront, RECOVERY_SECONDS + .2);
+  assert.equal(returning.status, 'active', 'the remaining four should hold the line until a teammate returns');
+  assert.equal(returning.hp, returning.maxHp * REVIVE_HP_RATIO);
+  assert.ok(holdingFront.allies.filter(ally => ally.status === 'active').length >= 4);
 });
 
 test('an attack starts the visible 9.5 second recovery timer', () => {
@@ -234,6 +248,7 @@ test('collapse ignores danger acknowledgement and retreat restores the saved cam
   s.camp = 90;
   s.distance = 160;
   s.best = 180;
+  s.peakSinceCamp = 160;
   s.coins = 90;
   s.spent = 35;
   s.upgrades.hook = 1;
@@ -244,10 +259,17 @@ test('collapse ignores danger acknowledgement and retreat restores the saved cam
   assert.equal(retreat(s), true);
   assert.equal(s.pauseReason, 'camp');
   assert.equal(s.distance, 90);
+  assert.equal(s.peakSinceCamp, 90);
+  assert.equal(s.best, 180, 'retreat preserves the all-time high distance');
   assert.equal(s.coins, 70);
   assert.equal(s.spent, 20);
   assert.deepEqual(s.upgrades, { hook: 1 });
   assert.ok(s.allies.every(ally => ally.status === 'active' && ally.hp === ally.maxHp));
+  s.spawnIn = 100;
+  resume(s);
+  step(s, STEP);
+  assert.equal(s.pauseReason, null, 'old high-water progress must not immediately stop a new attempt');
+  assert.equal(s.paused, false);
 });
 
 test('manual pause and resume still freeze and restart the simulation', () => {
@@ -263,16 +285,25 @@ test('manual pause and resume still freeze and restart the simulation', () => {
   assert.equal(s.pauseReason, null);
 });
 
-test('save validation migrates v1 allies and preserves v2 recovery and collapse state', () => {
+test('save validation migrates older saves and preserves recovery, collapse, and current-run peak', () => {
   const legacy = JSON.parse(JSON.stringify(createGame())) as Record<string, unknown>;
   legacy.version = 1;
   const oldAllies = legacy.allies as Array<Record<string, unknown>>;
   oldAllies[1].hp = 0;
   for (const ally of oldAllies) { delete ally.status; delete ally.reviveIn; }
   const migrated = validateSave(legacy);
-  assert.equal(migrated?.version, 2);
+  assert.equal(migrated?.version, 3);
   assert.equal(migrated?.allies[1].status, 'downed');
   assert.equal(migrated?.allies[1].reviveIn, RECOVERY_SECONDS);
+
+  const versionTwo = JSON.parse(JSON.stringify(createGame())) as Record<string, unknown>;
+  versionTwo.version = 2;
+  delete versionTwo.peakSinceCamp;
+  versionTwo.distance = 74;
+  versionTwo.best = 160;
+  const migratedV2 = validateSave(versionTwo);
+  assert.equal(migratedV2?.version, 3);
+  assert.equal(migratedV2?.peakSinceCamp, 74);
 
   const downedSave = createGame();
   down(downedSave.allies[0], 3.25);
@@ -286,6 +317,7 @@ test('save validation migrates v1 allies and preserves v2 recovery and collapse 
   const collapsed = validateSave(JSON.parse(JSON.stringify(downedSave)));
   assert.equal(collapsed?.pauseReason, 'collapse');
   assert.equal(collapsed?.paused, true);
+  assert.equal(collapsed?.peakSinceCamp, 0);
   const invalid = JSON.parse(JSON.stringify(downedSave)) as GameState;
   invalid.allies[0].reviveIn = -1;
   assert.equal(validateSave(invalid), null);
