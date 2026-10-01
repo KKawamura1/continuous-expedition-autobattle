@@ -247,14 +247,31 @@ test('actual time-based recovery offsets damage and affects front movement', () 
   resume(pressured);
   run(pressured, 2.1);
   assert.ok(pressured.rates.damage > pressured.rates.recovery, 'HP loss can outpace automatic recovery');
-  assert.ok(pressured.velocity < 0, 'net HP loss pushes the front backward');
+  assert.ok(pressured.velocity < recovering.velocity, 'net HP loss slows the front relative to net recovery');
 
-  const killMomentum = createGame();
-  killMomentum.spawnIn = 100;
-  killMomentum.rates = { kills: 10, damage: 8, recovery: 1, income: 0 };
-  resume(killMomentum);
-  step(killMomentum, STEP);
-  assert.ok(killMomentum.velocity < 0, 'kill momentum cannot conceal a net HP loss');
+  const nonlethalPressure = createGame();
+  const sameBalanceWithKills = createGame();
+  for (const state of [nonlethalPressure, sameBalanceWithKills]) {
+    state.spawnIn = 100;
+    state.rates = { kills: 0, damage: 2, recovery: .5, income: 0 };
+    resume(state);
+  }
+  sameBalanceWithKills.rates.kills = 10;
+  step(nonlethalPressure, STEP); step(sameBalanceWithKills, STEP);
+  assert.equal(sameBalanceWithKills.velocity, nonlethalPressure.velocity, 'kills do not directly affect front speed');
+
+  const sustainedLoss = createGame();
+  sustainedLoss.spawnIn = 100;
+  sustainedLoss.rates = { kills: 10, damage: 20, recovery: 0, income: 0 };
+  resume(sustainedLoss);
+  run(sustainedLoss, 2.1);
+  assert.ok(sustainedLoss.velocity < 0, 'sustained net loss turns the front backward');
+
+  const safeAdvance = createGame();
+  safeAdvance.spawnIn = 100;
+  resume(safeAdvance);
+  step(safeAdvance, STEP);
+  assert.ok(safeAdvance.velocity > 0, 'the squad advances while it takes no damage');
 });
 
 test('enemies attack only allies in range and Nagi guards only a nearby front-side ally', () => {

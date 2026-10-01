@@ -363,13 +363,10 @@ export function step(s: GameState, dt = STEP): void {
   s.enemies = alive(s);
   s.effects = s.effects.filter(fx => (fx.life -= dt) > 0);
   updateRates(s, dt);
-  // Pressure is a short rolling observation, so each kill produces a visible push without a one-frame jump.
+  // HP balance alone moves the front. Defeated enemies affect it indirectly by
+  // reducing future attacks; no incoming damage means the squad keeps advancing.
   const netDamage = s.rates.damage - s.rates.recovery;
-  let target = 5.6 * s.rates.kills - 1.25 - .53 * netDamage;
-  // HP balance sets the direction: kill momentum cannot hide sustained net loss,
-  // and actual healing can slowly regain ground even during a lull.
-  if (netDamage > .1) target = Math.min(target, -Math.min(3.8, .25 + .53 * netDamage));
-  else if (netDamage < -.1) target = Math.max(target, Math.min(3.8, .25 + .53 * -netDamage));
+  let target = 2.8 - .53 * netDamage;
   target = clamp(target, -3.8, 6.5);
   s.velocity += (target - s.velocity) * Math.min(1, dt * 1.15);
   s.distance = Math.max(s.camp, s.distance + s.velocity * dt);
