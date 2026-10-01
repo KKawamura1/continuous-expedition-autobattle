@@ -58,7 +58,7 @@ export function createGame(seed = 194): GameState {
     version: 1, seed: seed >>> 0, nextId: 1, time: 0, distance: 0, best: 0, camp: 0,
     velocity: 0, kills: 0, earnings: 0, coins: 0, spent: 0, upgrades: {},
     allies: ROSTER.map(a => ({ id: a.id, x: a.x, y: a.y, hp: a.hp, maxHp: a.hp, shield: 0, cooldown: .3, casts: 0 })),
-    enemies: [], effects: [], spawnIn: 1, paused: true, pauseReason: 'start', speed: 1,
+    enemies: [], effects: [], spawnIn: 1, paused: true, pauseReason: 'start', dangerAcknowledged: false, speed: 1,
     campSnapshot: null, stats: { kills: 0, damage: 0, income: 0, collisions: 0, counter: 0, period: 0 },
     rates: { kills: 0, damage: 0, income: 0 }, events: ['坑の入り口。前線の変化を見ながら進もう。'], comparison: null
   };
@@ -264,13 +264,18 @@ export function step(s: GameState, dt = STEP): void {
   const nextCamp = (Math.floor(s.camp / CAMP_INTERVAL) + 1) * CAMP_INTERVAL;
   if (s.distance >= nextCamp) {
     s.distance = nextCamp; s.camp = nextCamp; s.velocity = 0; s.paused = true; s.pauseReason = 'camp';
+    s.dangerAcknowledged = false;
     s.enemies = []; s.effects = []; s.spawnIn = .8;
     for (const a of s.allies) { a.hp = a.maxHp; a.shield = 0; a.cooldown = .3; }
     s.campSnapshot = snapshot(s);
     log(s, `${nextCamp}mの中継拠点に到達。遠征資金を組み直せる。`);
-  } else if (s.best > s.camp + 65 && (s.distance < s.camp + 18 || totalHp(s) < maxHp * .19)) {
-    s.paused = true; s.pauseReason = 'danger';
-    log(s, '危険域で自動停止。改造して押し返すか、拠点へ撤退しよう。');
+  } else {
+    const inDanger = s.best > s.camp + 65 && (s.distance < s.camp + 18 || totalHp(s) < maxHp * .19);
+    if (!inDanger) s.dangerAcknowledged = false;
+    else if (!s.dangerAcknowledged) {
+      s.paused = true; s.pauseReason = 'danger'; s.dangerAcknowledged = true;
+      log(s, '危険域で自動停止。改造して押し返すか、拠点へ撤退しよう。');
+    }
   }
 }
 function snapshot(s: GameState): CampSnapshot {
@@ -283,6 +288,7 @@ export function retreat(s: GameState): boolean {
   s.upgrades = { ...saved.upgrades }; s.earnings = saved.earnings; s.kills = saved.kills;
   s.enemies = []; s.effects = []; s.spawnIn = .8; s.velocity = 0; s.rates = { kills: 0, damage: 0, income: 0 };
   s.stats = { kills: 0, damage: 0, income: 0, collisions: 0, counter: 0, period: 0 };
+  s.dangerAcknowledged = false;
   for (const a of s.allies) { a.hp = a.maxHp; a.shield = 0; a.cooldown = .3; }
   s.paused = true; s.pauseReason = 'camp'; s.comparison = null;
   log(s, `${saved.camp}mの拠点へ撤退。途中の資金と購入は戻った。`);
@@ -390,6 +396,7 @@ export function validateSave(raw: unknown): GameState | null {
   if (allies.some(ally => ally === null) || enemies.some(enemy => enemy === null) || !upgrades || !rates || !stats) return null;
   if (raw.campSnapshot !== null && !campSnapshot) return null;
   if (typeof raw.paused !== 'boolean' || !reasons.includes(raw.pauseReason as PauseReason)) return null;
+  if (raw.dangerAcknowledged !== undefined && typeof raw.dangerAcknowledged !== 'boolean') return null;
   if (![1, 2, 4].includes(raw.speed as number)) return null;
   if (!Array.isArray(raw.events) || raw.events.some(event => typeof event !== 'string')) return null;
   // The browser never simulates time while the page is closed. Effects and comparisons are transient.
@@ -401,6 +408,7 @@ export function validateSave(raw: unknown): GameState | null {
     upgrades, allies: allies as AllyState[], enemies: enemies as EnemyState[], effects: [],
     spawnIn: raw.spawnIn as number, paused: true,
     pauseReason: (raw.pauseReason as PauseReason) || 'manual', speed: raw.speed as 1 | 2 | 4,
+    dangerAcknowledged: typeof raw.dangerAcknowledged === 'boolean' ? raw.dangerAcknowledged : raw.pauseReason === 'danger',
     campSnapshot, stats, rates, events: raw.events as string[], comparison: null
   };
 }

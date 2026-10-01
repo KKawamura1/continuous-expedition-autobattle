@@ -125,6 +125,7 @@ export interface GameState {
   spawnIn: number;
   paused: boolean;
   pauseReason: PauseReason;
+  dangerAcknowledged: boolean;
   speed: 1 | 2 | 4;
   campSnapshot: CampSnapshot | null;
   stats: Stats;

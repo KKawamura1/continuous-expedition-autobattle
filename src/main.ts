@@ -118,7 +118,7 @@ function updateUi(force = false) {
   $('liveTag').textContent = game.paused ? '一時停止中' : `${game.speed}× 進軍中`;
   $('liveTag').classList.toggle('running', !game.paused);
   $('speedButton').textContent = `${game.speed}×`;
-  $('pauseButton').textContent = game.paused ? (game.pauseReason === 'start' ? '進軍を始める' : '工房を表示') : '改造・一時停止';
+  $('pauseButton').textContent = game.paused ? (game.pauseReason === 'start' ? '進軍を始める' : '進軍を再開') : '改造・一時停止';
   $('workshop').hidden = !game.paused;
   if (game.paused && force) {
     $('workshopTitle').textContent = game.pauseReason === 'camp' ? '中継拠点' : game.pauseReason === 'danger' ? '前線が危険域' : game.pauseReason === 'start' ? '遠征を始める' : '戦闘機械を改造';
@@ -135,8 +135,22 @@ function updateUi(force = false) {
   }
 }
 
-$('pauseButton').addEventListener('click', () => { if (game.pauseReason === 'start') { resume(game); save(); updateUi(true); return; } if (!game.paused) { pause(game); save(); updateUi(true); } $('workshop').scrollIntoView({ behavior: 'smooth', block: 'start' }); });
-$('resume').addEventListener('click', () => { resume(game); save(); updateUi(true); window.scrollTo({ top: 0, behavior: 'smooth' }); });
+function resumeExpedition(): void {
+  resume(game);
+  save();
+  updateUi(true);
+  window.scrollTo({ top: 0, behavior: 'smooth' });
+}
+$('pauseButton').addEventListener('click', () => {
+  if (game.paused) resumeExpedition();
+  else {
+    pause(game);
+    save();
+    updateUi(true);
+    $('workshop').scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }
+});
+$('resume').addEventListener('click', resumeExpedition);
 $('speedButton').addEventListener('click', () => { game.speed = game.speed === 1 ? 2 : game.speed === 2 ? 4 : 1; save(); updateUi(true); });
 $('refund').addEventListener('click', () => { if (refundAtCamp(game)) { save(); updateUi(true); } });
 $('retreat').addEventListener('click', () => { if (retreat(game)) { save(); updateUi(true); } });

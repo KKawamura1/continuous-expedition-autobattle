@@ -70,6 +70,38 @@ test('saved state reloads paused, preserving expedition progress', () => {
   assert.equal(validateSave({ version: 1, distance: 9 }), null);
 });
 
+test('resuming from danger continues through the same danger episode', () => {
+  const s = createGame(194);
+  resume(s);
+  run(s, 140);
+  assert.equal(s.pauseReason, 'danger');
+
+  // Older saves do not carry the acknowledgement flag; infer it from the saved danger stop.
+  const oldSave = JSON.parse(JSON.stringify(s)) as Record<string, unknown>;
+  delete oldSave.dangerAcknowledged;
+  const loaded = validateSave(oldSave);
+  if (!loaded) throw new Error('Expected the danger save to be valid.');
+  assert.equal(loaded.dangerAcknowledged, true);
+
+  const previousTime = loaded.time;
+  resume(loaded);
+  run(loaded, 1);
+  assert.equal(loaded.paused, false);
+  assert.equal(loaded.pauseReason, null);
+  assert.ok(loaded.time > previousTime);
+
+  // Once the party and front leave the danger condition, a later danger can pause again.
+  loaded.distance = loaded.camp + 20;
+  for (const ally of loaded.allies) ally.hp = ally.maxHp;
+  step(loaded);
+  assert.equal(loaded.dangerAcknowledged, false);
+  loaded.distance = loaded.camp + 17;
+  for (const ally of loaded.allies) ally.hp = 0;
+  step(loaded);
+  assert.equal(loaded.paused, true);
+  assert.equal(loaded.pauseReason, 'danger');
+});
+
 test('save validation restores enemy kinds from earlier saves and rejects broken state', () => {
   const oldSave = JSON.parse(JSON.stringify(createGame()));
   oldSave.enemies = [{
