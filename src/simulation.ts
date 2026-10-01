@@ -366,9 +366,10 @@ export function step(s: GameState, dt = STEP): void {
   // Pressure is a short rolling observation, so each kill produces a visible push without a one-frame jump.
   const netDamage = s.rates.damage - s.rates.recovery;
   let target = 5.6 * s.rates.kills - 1.25 - .53 * netDamage;
-  // A sustained net HP recovery means the formation can regain ground even
-  // during a lull; recovery is counted only when missing HP is actually restored.
-  if (netDamage < -.1) target = Math.max(target, .25);
+  // HP balance sets the direction: kill momentum cannot hide sustained net loss,
+  // and actual healing can slowly regain ground even during a lull.
+  if (netDamage > .1) target = Math.min(target, -Math.min(3.8, .25 + .53 * netDamage));
+  else if (netDamage < -.1) target = Math.max(target, Math.min(3.8, .25 + .53 * -netDamage));
   target = clamp(target, -3.8, 6.5);
   s.velocity += (target - s.velocity) * Math.min(1, dt * 1.15);
   s.distance = Math.max(s.camp, s.distance + s.velocity * dt);

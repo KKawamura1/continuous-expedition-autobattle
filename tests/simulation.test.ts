@@ -248,6 +248,13 @@ test('actual time-based recovery offsets damage and affects front movement', () 
   run(pressured, 2.1);
   assert.ok(pressured.rates.damage > pressured.rates.recovery, 'HP loss can outpace automatic recovery');
   assert.ok(pressured.velocity < 0, 'net HP loss pushes the front backward');
+
+  const killMomentum = createGame();
+  killMomentum.spawnIn = 100;
+  killMomentum.rates = { kills: 10, damage: 8, recovery: 1, income: 0 };
+  resume(killMomentum);
+  step(killMomentum, STEP);
+  assert.ok(killMomentum.velocity < 0, 'kill momentum cannot conceal a net HP loss');
 });
 
 test('enemies attack only allies in range and Nagi guards only a nearby front-side ally', () => {
