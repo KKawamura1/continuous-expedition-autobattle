@@ -640,3 +640,33 @@ test('a whole squad knocked out in one frame collapses with a loadable finite wo
   assert.ok(Number.isFinite(s.retreatBias));
   assert.ok(decodeSave(encodeSave(s)));
 });
+
+
+test('a continuous expedition measures world movement and re-encounters the same retreating enemy groups', () => {
+  const s = createGame(194); resume(s);
+  const seen = new Map<number, { close: boolean; separated: boolean }>();
+  let advances = 0, retreats = 0, recontacts = 0;
+  for (let i = 0; i < 1200 / STEP; i++) {
+    const previousDistance = s.distance;
+    step(s);
+    assert.ok(Math.abs(s.distance - (WORLD_ORIGIN_Y - calculateFrontline(s)) * METRES_PER_UNIT) < 1e-8);
+    if (!s.paused) assert.ok(Math.abs(s.velocity - (s.distance - previousDistance) / STEP) < 1e-8);
+    if (s.velocity > .5) advances++;
+    if (s.velocity < -.5) retreats++;
+    for (const e of s.enemies) {
+      const d = Math.min(...s.allies.filter(a => a.status === 'active').map(a => Math.hypot(a.x - e.x, a.y - e.y)));
+      const prior = seen.get(e.id) ?? { close: false, separated: false };
+      if (prior.close && d > .4) prior.separated = true;
+      if (prior.separated && d < .25) recontacts++;
+      if (d < .25) prior.close = true;
+      seen.set(e.id, prior);
+    }
+    if (s.paused) { assert.equal(s.pauseReason, 'camp'); resume(s); }
+  }
+  assert.ok(advances > 100 && retreats > 100);
+  assert.ok(recontacts > 0, 'previously contacted enemies survive separation and meet the squad again');
+  assert.ok(s.distance > 1000);
+  const restored = decodeSave(encodeSave(s))!;
+  assert.ok(restored);
+  assert.deepEqual(restored.enemies, s.enemies);
+});
