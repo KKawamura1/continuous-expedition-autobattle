@@ -1,4 +1,5 @@
 import { ENEMY_KINDS, ROSTER, UPGRADES } from './content.ts';
+import { RECOVERY_SECONDS } from './simulation.ts';
 import type {
   AllyId, AllyState, CampSnapshot, EnemyState, GameState, PauseReason, PersistentGameState, Rates,
   Stats, UpgradeId, UpgradeLevels
@@ -56,11 +57,22 @@ function parseCampSnapshot(raw: unknown): CampSnapshot | null {
     upgrades, earnings: raw.earnings as number, kills: raw.kills as number
   };
 }
-function parseAlly(raw: unknown, expectedId: AllyId): AllyState | null {
+function parseAlly(raw: unknown, expectedId: AllyId, legacySave: boolean): AllyState | null {
   if (!isRecord(raw) || raw.id !== expectedId) return null;
   if (![raw.x, raw.y, raw.hp, raw.maxHp, raw.shield, raw.cooldown, raw.casts].every(isFiniteNumber)) return null;
+  const status = raw.status === undefined && legacySave
+    ? ((raw.hp as number) <= 0 ? 'downed' : 'active')
+    : raw.status;
+  if (status !== 'active' && status !== 'downed') return null;
+  const reviveIn = raw.reviveIn === undefined && legacySave
+    ? (status === 'downed' ? RECOVERY_SECONDS : 0)
+    : raw.reviveIn;
+  if (!isFiniteNumber(reviveIn) || reviveIn < 0) return null;
+  if (status === 'active' && ((raw.hp as number) <= 0 || reviveIn !== 0)) return null;
+  if (status === 'downed' && ((raw.hp as number) !== 0 || reviveIn <= 0)) return null;
   return {
     id: expectedId, x: raw.x as number, y: raw.y as number, hp: raw.hp as number,
+    status, reviveIn,
     maxHp: raw.maxHp as number, shield: raw.shield as number, cooldown: raw.cooldown as number,
     casts: raw.casts as number
   };
@@ -85,7 +97,10 @@ function parseEnemy(raw: unknown): EnemyState | null {
 }
 function parseRates(raw: unknown): Rates | null {
   if (!isRecord(raw) || ![raw.kills, raw.damage, raw.income].every(isFiniteNumber)) return null;
-  return { kills: raw.kills as number, damage: raw.damage as number, income: raw.income as number };
+  if (raw.recovery !== undefined && !isFiniteNumber(raw.recovery)) return null;
+  const recovery = (raw.recovery as number | undefined) ?? 0;
+  if (recovery < 0) return null;
+  return { kills: raw.kills as number, damage: raw.damage as number, recovery, income: raw.income as number };
 }
 function parseStats(raw: unknown): Stats | null {
   const rates = parseRates(raw);
@@ -94,34 +109,41 @@ function parseStats(raw: unknown): Stats | null {
 }
 
 export function validateSave(raw: unknown): GameState | null {
-  if (!isRecord(raw) || raw.version !== 1) return null;
+  if (!isRecord(raw) || (raw.version !== 1 && raw.version !== 2 && raw.version !== 3)) return null;
+  const legacySave = raw.version !== 3;
   const numbers = ['seed', 'nextId', 'time', 'distance', 'best', 'camp', 'velocity', 'kills', 'earnings', 'coins', 'spent', 'spawnIn'];
   if (!numbers.every(field => isFiniteNumber(raw[field]))) return null;
+  const migratedPeak = Math.max(raw.camp as number, raw.distance as number,
+    raw.pauseReason === 'danger' ? (raw.camp as number) + 66 : raw.camp as number);
+  const peakSinceCamp = raw.peakSinceCamp === undefined && legacySave ? migratedPeak : raw.peakSinceCamp;
+  if (!isFiniteNumber(peakSinceCamp) || peakSinceCamp < (raw.camp as number)) return null;
   if (!Array.isArray(raw.allies) || raw.allies.length !== ROSTER.length) return null;
   if (!Array.isArray(raw.enemies)) return null;
-  const allies = raw.allies.map((ally, index) => parseAlly(ally, ROSTER[index].id));
+  const allies = raw.allies.map((ally, index) => parseAlly(ally, ROSTER[index].id, legacySave));
   const enemies = raw.enemies.map(parseEnemy);
   const upgrades = parseUpgradeLevels(raw.upgrades);
   const rates = parseRates(raw.rates);
   const stats = parseStats(raw.stats);
   const campSnapshot = raw.campSnapshot === null ? null : parseCampSnapshot(raw.campSnapshot);
-  const reasons: PauseReason[] = ['start', 'camp', 'danger', 'manual', null];
+  const reasons: PauseReason[] = ['start', 'camp', 'danger', 'manual', 'collapse', null];
   if (allies.some(ally => ally === null) || enemies.some(enemy => enemy === null) || !upgrades || !rates || !stats) return null;
   if (raw.campSnapshot !== null && !campSnapshot) return null;
   if (typeof raw.paused !== 'boolean' || !reasons.includes(raw.pauseReason as PauseReason)) return null;
   if (raw.dangerAcknowledged !== undefined && typeof raw.dangerAcknowledged !== 'boolean') return null;
   if (![1, 2, 4].includes(raw.speed as number)) return null;
   if (!Array.isArray(raw.events) || raw.events.some(event => typeof event !== 'string')) return null;
-  // Reading version 1 here leaves a clear boundary for a real save-format migration later.
+  const collapsed = (allies as AllyState[]).every(ally => ally.status === 'downed');
+  if (!collapsed && raw.pauseReason === 'collapse') return null;
   // Effects and comparisons are transient; loading always returns a paused expedition.
   return {
-    version: 1, seed: (raw.seed as number) >>> 0, nextId: raw.nextId as number,
+    version: 3, seed: (raw.seed as number) >>> 0, nextId: raw.nextId as number,
     time: raw.time as number, distance: raw.distance as number, best: raw.best as number,
+    peakSinceCamp,
     camp: raw.camp as number, velocity: raw.velocity as number, kills: raw.kills as number,
     earnings: raw.earnings as number, coins: raw.coins as number, spent: raw.spent as number,
     upgrades, allies: allies as AllyState[], enemies: enemies as EnemyState[], effects: [],
     spawnIn: raw.spawnIn as number, paused: true,
-    pauseReason: (raw.pauseReason as PauseReason) || 'manual', speed: raw.speed as 1 | 2 | 4,
+    pauseReason: collapsed ? 'collapse' : (raw.pauseReason as PauseReason) || 'manual', speed: raw.speed as 1 | 2 | 4,
     dangerAcknowledged: typeof raw.dangerAcknowledged === 'boolean' ? raw.dangerAcknowledged : raw.pauseReason === 'danger',
     campSnapshot, stats, rates, events: raw.events as string[], comparison: null
   };

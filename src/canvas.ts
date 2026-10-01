@@ -46,8 +46,15 @@ export function createBattleRenderer(canvas: HTMLCanvasElement): { resize: () =>
       const person = ROSTER.find(r => r.id === a.id)!;
       context.fillStyle = 'rgba(0,0,0,.25)'; context.beginPath(); context.ellipse(a.x, a.y + .015, .046, .015, 0, 0, 7); context.fill();
       if (a.shield > 0) { context.strokeStyle = '#b4ded4'; context.lineWidth = .006; context.beginPath(); context.arc(a.x, a.y, .048, 0, 7); context.stroke(); }
-      context.fillStyle = a.hp > 0 ? person.color : '#58656a'; context.strokeStyle = '#e6e2ce'; context.lineWidth = .004;
+      context.fillStyle = a.status === 'active' ? person.color : '#58656a'; context.strokeStyle = '#e6e2ce'; context.lineWidth = .004;
       context.beginPath(); context.arc(a.x, a.y, .031, 0, 7); context.fill(); context.stroke();
+      if (a.status === 'downed') {
+        context.strokeStyle = '#e8947f'; context.lineWidth = .006;
+        context.beginPath();
+        context.moveTo(a.x - .012, a.y - .012); context.lineTo(a.x + .012, a.y + .012);
+        context.moveTo(a.x + .012, a.y - .012); context.lineTo(a.x - .012, a.y + .012);
+        context.stroke();
+      }
       context.save(); context.setTransform(canvas.width / canvas.clientWidth, 0, 0, canvas.height / canvas.clientHeight, 0, 0);
       context.fillStyle = '#1a2930'; context.textAlign = 'center'; context.font = 'bold 13px system-ui'; context.fillText(person.name[0], a.x * canvas.clientWidth, a.y * canvas.clientHeight + 4);
       context.fillStyle = 'rgba(234,237,222,.9)'; context.font = '10px system-ui'; context.fillText(person.name, a.x * canvas.clientWidth, (a.y + .063) * canvas.clientHeight); context.restore();

@@ -4,7 +4,8 @@ export type UpgradeId =
   | 'hook' | 'cleave' | 'collision' | 'counter' | 'chain' | 'pierce' | 'barrier' | 'shock'
   | 'longshot' | 'rapid' | 'ward' | 'reach' | 'arc';
 export type UpgradeGroup = 'structure' | 'tuning';
-export type PauseReason = 'start' | 'camp' | 'danger' | 'manual' | null;
+export type PauseReason = 'start' | 'camp' | 'danger' | 'manual' | 'collapse' | null;
+export type AllyStatus = 'active' | 'downed';
 export type EffectKind = 'line' | 'burst';
 export type DamageSource = AllyId | 'collision' | 'counter';
 export type UpgradeLevels = Partial<Record<UpgradeId, number>>;
@@ -17,6 +18,8 @@ export interface RosterEntry {
   y: number;
   hp: number;
   range: number;
+  preferredRange: number;
+  moveSpeed: number;
   damage: number;
   interval: number;
   color: string;
@@ -51,6 +54,8 @@ export interface AllyState {
   y: number;
   hp: number;
   maxHp: number;
+  status: AllyStatus;
+  reviveIn: number;
   shield: number;
   cooldown: number;
   casts: number;
@@ -81,6 +86,7 @@ export interface EffectState {
 export interface Rates {
   kills: number;
   damage: number;
+  recovery: number;
   income: number;
 }
 
@@ -106,12 +112,13 @@ export interface Comparison extends Rates {
 }
 
 export interface GameState {
-  version: 1;
+  version: 3;
   seed: number;
   nextId: number;
   time: number;
   distance: number;
   best: number;
+  peakSinceCamp: number;
   camp: number;
   velocity: number;
   kills: number;

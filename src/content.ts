@@ -1,11 +1,11 @@
 import type { EnemyKindDefinition, RosterEntry, UpgradeDefinition } from './types.ts';
 
 export const ROSTER = [
-  { id: 'gou', name: 'ゴウ', role: '前衛・衝撃', x: .42, y: .77, hp: 100, range: .23, damage: 21, interval: 1.35, color: '#db966c' },
-  { id: 'nagi', name: 'ナギ', role: '庇護・反撃', x: .67, y: .79, hp: 125, range: .22, damage: 13, interval: 1.65, color: '#7eb8b1' },
-  { id: 'hibana', name: 'ヒバナ', role: '連撃', x: .23, y: .8, hp: 75, range: .31, damage: 9, interval: .57, color: '#e8bc71' },
-  { id: 'tsugumi', name: 'ツグミ', role: '射撃・治療', x: .32, y: .91, hp: 78, range: .66, damage: 12, interval: 1.35, color: '#a4c5a0' },
-  { id: 'genzou', name: 'ゲンゾウ', role: '術式', x: .76, y: .9, hp: 78, range: .72, damage: 16, interval: 1.75, color: '#af9dc8' }
+  { id: 'gou', name: 'ゴウ', role: '前衛・衝撃', x: .42, y: .77, hp: 100, range: .23, preferredRange: .15, moveSpeed: .19, damage: 21, interval: 1.35, color: '#db966c' },
+  { id: 'nagi', name: 'ナギ', role: '庇護・反撃', x: .67, y: .79, hp: 125, range: .22, preferredRange: .18, moveSpeed: .14, damage: 13, interval: 1.65, color: '#7eb8b1' },
+  { id: 'hibana', name: 'ヒバナ', role: '連撃', x: .23, y: .8, hp: 75, range: .31, preferredRange: .21, moveSpeed: .24, damage: 9, interval: .57, color: '#e8bc71' },
+  { id: 'tsugumi', name: 'ツグミ', role: '射撃・治療', x: .32, y: .91, hp: 78, range: .66, preferredRange: .48, moveSpeed: .15, damage: 12, interval: 1.35, color: '#a4c5a0' },
+  { id: 'genzou', name: 'ゲンゾウ', role: '術式', x: .76, y: .9, hp: 78, range: .72, preferredRange: .55, moveSpeed: .13, damage: 16, interval: 1.75, color: '#af9dc8' }
 ] satisfies RosterEntry[];
 
 export const UPGRADES = [
