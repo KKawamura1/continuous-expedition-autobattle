@@ -15,6 +15,8 @@ npm run dev
 
 ## Cloudflare Workers
 
+mainの本番環境: [https://continuous-expedition-autobattle.focusgate-kkawamura.workers.dev](https://continuous-expedition-autobattle.focusgate-kkawamura.workers.dev/)
+
 Cloudflare WorkersのGit連携でこのGitHubリポジトリを接続すると、Production branch（`main`）への更新で本番公開され、Preview buildsを有効にすると他のブランチやプルリクエストにプレビューURLが作られます。プレビューURLはプルリクエストにも投稿されます。
 
 設定値は次の通りです。
