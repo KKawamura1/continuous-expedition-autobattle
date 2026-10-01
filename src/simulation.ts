@@ -430,8 +430,8 @@ export function describe(s: GameState): string {
   if (!s.paused && s.allies.some(a => a.hp / a.maxHp < .55)) return '傷ついた隊員が後方で回復中。HPに応じて敵との距離を保つ。';
   if (crowd >= 7) return '敵が前線に滞留中。密集・接触を活かせるか観察。';
   if (s.rates.damage - s.rates.recovery > 5) return '受ける被害が回復を上回り、進軍を押し戻しています。';
-  if (s.velocity > 1.4) return '撃破が抵抗を上回り、前線を押し上げています。';
-  if (s.velocity < -.7) return '敵の処理が追いつかず、前線が後退中。';
+  if (s.velocity > 1.4) return '前線が前進中。被害と回復の釣り合いを見よう。';
+  if (s.velocity < -.7) return '損失が積み上がり、前線が後退中。';
   return '敵の数、被害、撃破の変化を見て改造しよう。';
 }
 export const format = (value: number): string => round(value).toFixed(1);
