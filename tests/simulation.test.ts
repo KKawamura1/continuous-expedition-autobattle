@@ -1,8 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { buy, createGame, pause, refundAtCamp, resume, retreat, step, validateSave, CAMP_INTERVAL, STEP } from '../src/simulation.js';
+import { buy, createGame, pause, refundAtCamp, resume, retreat, step, validateSave, CAMP_INTERVAL, STEP } from '../src/simulation.ts';
+import type { GameState } from '../src/types.ts';
 
-function run(s, seconds) {
+function run(s: GameState, seconds: number): void {
   for (let i = 0; i < Math.round(seconds / STEP) && !s.paused; i++) step(s, STEP);
 }
 
@@ -60,10 +61,25 @@ test('a purchase requires pause and refunds only at a reached camp', () => {
 test('saved state reloads paused, preserving expedition progress', () => {
   const s = createGame(); resume(s); run(s, 20);
   const loaded = validateSave(JSON.parse(JSON.stringify(s)));
+  if (!loaded) throw new Error('Expected the saved state to be valid.');
   assert.ok(loaded.paused);
   assert.equal(loaded.distance, s.distance);
   assert.equal(loaded.coins, s.coins);
   const before = loaded.time; step(loaded);
   assert.equal(loaded.time, before);
   assert.equal(validateSave({ version: 1, distance: 9 }), null);
+});
+
+test('save validation restores enemy kinds from earlier saves and rejects broken state', () => {
+  const oldSave = JSON.parse(JSON.stringify(createGame()));
+  oldSave.enemies = [{
+    id: 1, name: '重殻体', hp: 50, maxHp: 83, speed: .031, damage: 9, mass: 2.6, pressure: 2.3,
+    bounty: 29, radius: .041, color: '#ad9dc0', x: .5, y: .1, vy: 0, attackCd: 1, flash: 0
+  }];
+  const restored = validateSave(oldSave);
+  assert.equal(restored?.enemies[0]?.kind, 'heavy');
+  assert.equal(restored?.enemies[0]?.impactCd, 0);
+
+  oldSave.upgrades = null;
+  assert.equal(validateSave(oldSave), null);
 });

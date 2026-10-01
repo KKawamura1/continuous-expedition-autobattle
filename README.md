@@ -13,6 +13,10 @@ npm run dev
 
 表示されたURLをブラウザで開きます。iPhoneで試す場合は、同じネットワーク上のPCで起動し、表示されたNetwork URLを開けます。`npm test`で戦闘と拠点のルールを、`npm run build`で配布用ビルドを確認できます。
 
+## Cloudflare Pages
+
+Cloudflare PagesでこのGitHubリポジトリをGit連携すると、`main`への更新を本番公開し、プルリクエストごとにブランチプレビューを作成できます。ビルドコマンドは `npm run build`、出力ディレクトリは `dist` です。`wrangler.jsonc`にも出力先を記載しています。`npm run build`はTypeScriptの型検査を通してからViteで公開ファイルを作ります。
+
 ## 遊び方
 
 1. 「進軍を再開」で自律戦闘を始めます。画面上から現れる敵を5人が自動で迎えます。
