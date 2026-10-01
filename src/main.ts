@@ -1,17 +1,19 @@
 import {
-  CAMP_INTERVAL, ROSTER, UPGRADES, STEP, buy, createGame, describe, format, pause, price,
-  refundAtCamp, resume, retreat, step, validateSave
+  CAMP_INTERVAL, STEP, buy, createGame, describe, format, pause, price,
+  refundAtCamp, resume, retreat, step
 } from './simulation.ts';
+import { createBattleRenderer } from './canvas.ts';
+import { ROSTER, UPGRADES } from './content.ts';
+import { decodeSave, encodeSave, SAVE_KEY } from './save.ts';
 import type { GameState, UpgradeGroup } from './types.ts';
 import './style.css';
 
-const SAVE_KEY = 'continuous-expedition-prototype-v1';
 const app = document.querySelector<HTMLDivElement>('#app');
 if (!app) throw new Error('Game root element #app was not found.');
 let game: GameState;
 try {
   const stored = localStorage.getItem(SAVE_KEY);
-  game = stored ? validateSave(JSON.parse(stored)) || createGame() : createGame();
+  game = decodeSave(stored) || createGame();
 }
 catch { game = createGame(); }
 let showAll = false;
@@ -66,12 +68,8 @@ const $ = <T extends HTMLElement = HTMLElement>(id: string): T => {
   return element as T;
 };
 const canvas = $<HTMLCanvasElement>('battle');
-const ctx: CanvasRenderingContext2D = (() => {
-  const context = canvas.getContext('2d');
-  if (!context) throw new Error('This browser does not support Canvas 2D.');
-  return context;
-})();
-const save = () => { try { localStorage.setItem(SAVE_KEY, JSON.stringify(game)); } catch { /* Storage may be disabled. Play remains available. */ } };
+const renderer = createBattleRenderer(canvas);
+const save = () => { try { localStorage.setItem(SAVE_KEY, encodeSave(game)); } catch { /* Storage may be disabled. Play remains available. */ } };
 const number = (n: number): string => Math.round(n).toLocaleString('ja-JP');
 const sign = (n: number): string => (n >= 0 ? '+' : '') + format(n);
 
@@ -168,61 +166,8 @@ document.querySelectorAll<HTMLButtonElement>('.shop-tabs button').forEach(button
 }));
 document.addEventListener('visibilitychange', () => { if (document.hidden) { pause(game); save(); } else { lastFrame = 0; accumulator = 0; updateUi(true); } });
 
-function resize() {
-  const box = canvas.getBoundingClientRect();
-  const dpr = Math.min(2, window.devicePixelRatio || 1);
-  canvas.width = Math.round(box.width * dpr); canvas.height = Math.round(box.height * dpr);
-  ctx.setTransform(canvas.width, 0, 0, canvas.height, 0, 0);
-}
-window.addEventListener('resize', resize);
+window.addEventListener('resize', renderer.resize);
 
-function draw() {
-  const t = game.distance;
-  const bg = ctx.createLinearGradient(0, 0, 0, 1);
-  bg.addColorStop(0, '#344251'); bg.addColorStop(.55, '#263641'); bg.addColorStop(1, '#192b35');
-  ctx.fillStyle = bg; ctx.fillRect(0, 0, 1, 1);
-  ctx.strokeStyle = 'rgba(192,213,207,.07)'; ctx.lineWidth = .002;
-  for (let i = 0; i < 9; i++) {
-    const y = ((i / 8 + t / 240) % 1);
-    ctx.beginPath(); ctx.moveTo(.04, y); ctx.lineTo(.96, y); ctx.stroke();
-  }
-  ctx.setLineDash([.009, .02]); ctx.strokeStyle = 'rgba(172,204,193,.13)';
-  for (const x of [.12, .5, .88]) { ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, 1); ctx.stroke(); }
-  ctx.setLineDash([]);
-  ctx.fillStyle = 'rgba(10,24,31,.25)'; ctx.fillRect(0, .67, 1, .33);
-  ctx.strokeStyle = '#92bcae'; ctx.lineWidth = .003; ctx.setLineDash([.03, .015]);
-  ctx.beginPath(); ctx.moveTo(.04, .68); ctx.lineTo(.96, .68); ctx.stroke(); ctx.setLineDash([]);
-  ctx.save(); ctx.setTransform(canvas.width / canvas.clientWidth, 0, 0, canvas.height / canvas.clientHeight, 0, 0);
-  ctx.font = '600 10px system-ui'; ctx.fillStyle = 'rgba(194,219,207,.7)'; ctx.fillText('FRONT LINE', .05 * canvas.clientWidth, .665 * canvas.clientHeight); ctx.restore();
-  for (const e of game.enemies) {
-    ctx.fillStyle = 'rgba(0,0,0,.22)'; ctx.beginPath(); ctx.ellipse(e.x, e.y + .012, e.radius * 1.25, e.radius * .55, 0, 0, Math.PI * 2); ctx.fill();
-    ctx.fillStyle = e.flash > 0 ? '#fff4d5' : e.color; ctx.strokeStyle = '#12242d'; ctx.lineWidth = .005;
-    ctx.beginPath(); ctx.arc(e.x, e.y, e.radius, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
-    if (e.kind === 'heavy') { ctx.strokeStyle = '#ddd0e8'; ctx.lineWidth = .004; ctx.beginPath(); ctx.arc(e.x, e.y, e.radius * .63, 0, Math.PI * 2); ctx.stroke(); }
-    ctx.fillStyle = '#182830'; ctx.fillRect(e.x - e.radius, e.y - e.radius - .015, e.radius * 2, .005);
-    ctx.fillStyle = '#e6bc83'; ctx.fillRect(e.x - e.radius, e.y - e.radius - .015, e.radius * 2 * Math.max(0, e.hp / e.maxHp), .005);
-  }
-  for (const a of game.allies) {
-    const person = ROSTER.find(r => r.id === a.id)!;
-    ctx.fillStyle = 'rgba(0,0,0,.25)'; ctx.beginPath(); ctx.ellipse(a.x, a.y + .015, .046, .015, 0, 0, 7); ctx.fill();
-    if (a.shield > 0) { ctx.strokeStyle = '#b4ded4'; ctx.lineWidth = .006; ctx.beginPath(); ctx.arc(a.x, a.y, .048, 0, 7); ctx.stroke(); }
-    ctx.fillStyle = a.hp > 0 ? person.color : '#58656a'; ctx.strokeStyle = '#e6e2ce'; ctx.lineWidth = .004;
-    ctx.beginPath(); ctx.arc(a.x, a.y, .031, 0, 7); ctx.fill(); ctx.stroke();
-    ctx.save(); ctx.setTransform(canvas.width / canvas.clientWidth, 0, 0, canvas.height / canvas.clientHeight, 0, 0);
-    ctx.fillStyle = '#1a2930'; ctx.textAlign = 'center'; ctx.font = 'bold 13px system-ui'; ctx.fillText(person.name[0], a.x * canvas.clientWidth, a.y * canvas.clientHeight + 4);
-    ctx.fillStyle = 'rgba(234,237,222,.9)'; ctx.font = '10px system-ui'; ctx.fillText(person.name, a.x * canvas.clientWidth, (a.y + .063) * canvas.clientHeight); ctx.restore();
-  }
-  ctx.textAlign = 'left';
-  for (const fx of game.effects) {
-    ctx.globalAlpha = Math.min(1, fx.life / .3);
-    ctx.strokeStyle = fx.color; ctx.fillStyle = fx.color; ctx.lineWidth = .006;
-    if (fx.kind === 'burst') { ctx.beginPath(); ctx.arc(fx.x, fx.y, (.42 - fx.life) * .11, 0, 7); ctx.stroke(); }
-    else { ctx.beginPath(); ctx.moveTo(fx.x, fx.y); ctx.lineTo(fx.toX, fx.toY); ctx.stroke(); }
-  }
-  ctx.globalAlpha = 1;
-  // Framing bands keep labels and combat readable over any device width.
-  ctx.fillStyle = 'rgba(17,30,37,.35)'; ctx.fillRect(0, 0, .025, 1); ctx.fillRect(.975, 0, .025, 1);
-}
 function frame(now: number): void {
   if (!lastFrame) lastFrame = now;
   const elapsed = Math.min(.15, (now - lastFrame) / 1000); lastFrame = now;
@@ -232,7 +177,7 @@ function frame(now: number): void {
     while (accumulator >= STEP && iterations++ < 20 && !game.paused) { step(game, STEP); accumulator -= STEP; }
     if (iterations >= 20) accumulator = 0;
   } else accumulator = 0;
-  draw();
+  renderer.draw(game);
   if (now - lastUi > 220 || game.paused && !lastUi) {
     if (game.paused && $('workshop').hidden) { save(); updateUi(true); }
     else updateUi(false);
@@ -241,4 +186,4 @@ function frame(now: number): void {
   if (now - lastSave > 5000) { save(); lastSave = now; }
   requestAnimationFrame(frame);
 }
-resize(); updateUi(true); requestAnimationFrame(frame);
+renderer.resize(); updateUi(true); requestAnimationFrame(frame);

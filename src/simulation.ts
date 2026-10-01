@@ -1,42 +1,11 @@
+import { ENEMY_KINDS, ROSTER, UPGRADES } from './content.ts';
 import type {
-  AllyId, AllyState, CampSnapshot, Comparison, DamageSource, EffectKind, EnemyKindDefinition,
-  EnemyKindId, EnemyState, GameState, PauseReason, Rates, RosterEntry, Stats, UpgradeDefinition,
-  UpgradeId, UpgradeLevels
+  AllyState, CampSnapshot, Comparison, DamageSource, EffectKind, EnemyState, GameState, UpgradeId
 } from './types.ts';
 
 // The simulation owns all game rules. Rendering and storage never mutate state directly.
 export const STEP = 1 / 30;
 export const CAMP_INTERVAL = 300;
-export const ROSTER = [
-  { id: 'gou', name: 'ゴウ', role: '前衛・衝撃', x: .42, y: .77, hp: 100, range: .23, damage: 21, interval: 1.35, color: '#db966c' },
-  { id: 'nagi', name: 'ナギ', role: '庇護・反撃', x: .67, y: .79, hp: 125, range: .22, damage: 13, interval: 1.65, color: '#7eb8b1' },
-  { id: 'hibana', name: 'ヒバナ', role: '連撃', x: .23, y: .8, hp: 75, range: .31, damage: 9, interval: .57, color: '#e8bc71' },
-  { id: 'tsugumi', name: 'ツグミ', role: '射撃・治療', x: .32, y: .91, hp: 78, range: .66, damage: 12, interval: 1.35, color: '#a4c5a0' },
-  { id: 'genzou', name: 'ゲンゾウ', role: '術式', x: .76, y: .9, hp: 78, range: .72, damage: 16, interval: 1.75, color: '#af9dc8' }
-] satisfies RosterEntry[];
-
-export const UPGRADES = [
-  { id: 'hook', group: 'structure', name: '鉤引き', owner: 'ツグミ', cost: 55, description: '射撃した敵を手前に引く。重い敵ほど動きにくい。' },
-  { id: 'cleave', group: 'structure', name: '薙ぎ払い', owner: 'ゴウ', cost: 80, description: '近接攻撃が周囲にも当たる。密集した敵をまとめて削る。' },
-  { id: 'collision', group: 'structure', name: '衝突損傷', owner: '共通', cost: 80, description: '動かされた敵同士がぶつかると双方に傷を負う。' },
-  { id: 'counter', group: 'structure', name: '受け返し', owner: 'ナギ', cost: 70, description: 'ナギが受けた攻撃に反撃。敵が多いほど機会が増える。' },
-  { id: 'chain', group: 'structure', name: '鎖雷', owner: 'ゲンゾウ', cost: 90, description: '術式が近くの別の敵へ跳ぶ。敵の距離を参照する。' },
-  { id: 'pierce', group: 'structure', name: '貫き', owner: 'ツグミ', cost: 95, description: '射線上の敵にも弾が当たる。奥の敵ほど威力が減る。' },
-  { id: 'barrier', group: 'structure', name: '防壁処置', owner: 'ツグミ', cost: 65, description: '治療時にナギへ防壁を付ける。受け返しと噛み合う。' },
-  { id: 'shock', group: 'structure', name: '衝撃打', owner: 'ゴウ', cost: 75, description: 'ゴウの一撃が敵を押し返す。別の敵に当てられる。' },
-  { id: 'longshot', group: 'tuning', name: '長射程', owner: 'ツグミ', cost: 45, max: 3, description: '射程と遠距離での射撃威力を伸ばす。' },
-  { id: 'rapid', group: 'tuning', name: '連撃訓練', owner: 'ヒバナ', cost: 50, max: 3, description: 'ヒバナの攻撃間隔を短くする。単体処理が速くなる。' },
-  { id: 'ward', group: 'tuning', name: '装甲補修', owner: 'ナギ', cost: 45, max: 3, description: 'ナギの被害を抑え、治療の余裕を作る。' },
-  { id: 'reach', group: 'tuning', name: '踏み込み', owner: 'ゴウ', cost: 50, max: 3, description: 'ゴウの間合いを広げる。集めた敵に先手を取る。' },
-  { id: 'arc', group: 'tuning', name: '導体改良', owner: 'ゲンゾウ', cost: 55, max: 3, description: '鎖雷の跳躍距離と術式の威力を伸ばす。' }
-] satisfies UpgradeDefinition[];
-
-const KINDS = [
-  { id: 'stray', name: '徘徊体', hp: 31, speed: .048, damage: 5, mass: 1, pressure: 1, bounty: 13, radius: .026, color: '#d49c82' },
-  { id: 'runner', name: '疾走体', hp: 21, speed: .081, damage: 4, mass: .65, pressure: .8, bounty: 11, radius: .021, color: '#edc47e' },
-  { id: 'heavy', name: '重殻体', hp: 83, speed: .031, damage: 9, mass: 2.6, pressure: 2.3, bounty: 29, radius: .041, color: '#ad9dc0' },
-  { id: 'swarm', name: '群体', hp: 19, speed: .056, damage: 3, mass: .55, pressure: .65, bounty: 9, radius: .019, color: '#99bdb1' }
- ] satisfies EnemyKindDefinition[];
 type Point = Pick<AllyState, 'x' | 'y'>;
 const clamp = (value: number, min: number, max: number): number => Math.max(min, Math.min(max, value));
 const round = (value: number): number => Math.round(value * 10) / 10;
@@ -165,7 +134,7 @@ function heal(s: GameState): void {
 function spawn(s: GameState): void {
   const tier = Math.floor(s.distance / CAMP_INTERVAL);
   const r = random(s);
-  const kind = KINDS[r < .17 + tier * .02 ? 1 : r < .28 + tier * .04 ? 2 : r < .47 + tier * .03 ? 3 : 0];
+  const kind = ENEMY_KINDS[r < .17 + tier * .02 ? 1 : r < .28 + tier * .04 ? 2 : r < .47 + tier * .03 ? 3 : 0];
   const factor = 1 + s.distance / 650;
   s.enemies.push({ ...kind, id: s.nextId++, kind: kind.id, x: .1 + random(s) * .8, y: .055, hp: kind.hp * factor, maxHp: kind.hp * factor,
     damage: kind.damage * (1 + s.distance / 1300), vy: 0, attackCd: 1 + random(s), flash: 0, impactCd: 0 });
@@ -310,106 +279,5 @@ export function describe(s: GameState): string {
   if (s.velocity > 1.4) return '撃破が抵抗を上回り、前線を押し上げています。';
   if (s.velocity < -.7) return '敵の処理が追いつかず、前線が後退中。';
   return '敵の数、被害、撃破の変化を見て改造しよう。';
-}
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
-function isFiniteNumber(value: unknown): value is number {
-  return typeof value === 'number' && Number.isFinite(value);
-}
-function isUpgradeId(value: string): value is UpgradeId {
-  return UPGRADES.some(upgrade => upgrade.id === value);
-}
-function isEnemyKindId(value: unknown): value is EnemyKindId {
-  return KINDS.some(kind => kind.id === value);
-}
-function parseUpgradeLevels(raw: unknown): UpgradeLevels | null {
-  if (!isRecord(raw)) return null;
-  const result: UpgradeLevels = {};
-  for (const [key, value] of Object.entries(raw)) {
-    if (!isUpgradeId(key) || !Number.isInteger(value) || (value as number) < 0) return null;
-    const upgrade = UPGRADES.find(item => item.id === key)!;
-    if ((value as number) > (upgrade.max || 1)) return null;
-    result[key] = value as number;
-  }
-  return result;
-}
-function parseCampSnapshot(raw: unknown): CampSnapshot | null {
-  if (!isRecord(raw)) return null;
-  const upgrades = parseUpgradeLevels(raw.upgrades);
-  if (!upgrades) return null;
-  if (![raw.camp, raw.coins, raw.spent, raw.earnings, raw.kills].every(isFiniteNumber)) return null;
-  return {
-    camp: raw.camp as number, coins: raw.coins as number, spent: raw.spent as number,
-    upgrades, earnings: raw.earnings as number, kills: raw.kills as number
-  };
-}
-function parseAlly(raw: unknown, expectedId: AllyId): AllyState | null {
-  if (!isRecord(raw) || raw.id !== expectedId) return null;
-  if (![raw.x, raw.y, raw.hp, raw.maxHp, raw.shield, raw.cooldown, raw.casts].every(isFiniteNumber)) return null;
-  return {
-    id: expectedId, x: raw.x as number, y: raw.y as number, hp: raw.hp as number,
-    maxHp: raw.maxHp as number, shield: raw.shield as number, cooldown: raw.cooldown as number,
-    casts: raw.casts as number
-  };
-}
-function parseEnemy(raw: unknown): EnemyState | null {
-  if (!isRecord(raw)) return null;
-  // Saves made before kind IDs were kept separately can recover the kind from its display name.
-  const kind = isEnemyKindId(raw.kind)
-    ? KINDS.find(item => item.id === raw.kind)!
-    : KINDS.find(item => item.name === raw.name);
-  if (!kind) return null;
-  const fields = ['id', 'x', 'y', 'hp', 'maxHp', 'speed', 'damage', 'mass', 'pressure', 'bounty', 'radius', 'vy', 'attackCd'];
-  if (!fields.every(field => isFiniteNumber(raw[field]))) return null;
-  return {
-    id: raw.id as number, kind: kind.id, name: kind.name,
-    x: raw.x as number, y: raw.y as number, hp: raw.hp as number, maxHp: raw.maxHp as number,
-    speed: raw.speed as number, damage: raw.damage as number, mass: raw.mass as number,
-    pressure: raw.pressure as number, bounty: raw.bounty as number, radius: raw.radius as number,
-    color: kind.color, vy: raw.vy as number, attackCd: raw.attackCd as number,
-    flash: isFiniteNumber(raw.flash) ? raw.flash : 0, impactCd: isFiniteNumber(raw.impactCd) ? raw.impactCd : 0
-  };
-}
-function parseRates(raw: unknown): Rates | null {
-  if (!isRecord(raw) || ![raw.kills, raw.damage, raw.income].every(isFiniteNumber)) return null;
-  return { kills: raw.kills as number, damage: raw.damage as number, income: raw.income as number };
-}
-function parseStats(raw: unknown): Stats | null {
-  const rates = parseRates(raw);
-  if (!rates || !isRecord(raw) || ![raw.collisions, raw.counter, raw.period].every(isFiniteNumber)) return null;
-  return { ...rates, collisions: raw.collisions as number, counter: raw.counter as number, period: raw.period as number };
-}
-export function validateSave(raw: unknown): GameState | null {
-  if (!isRecord(raw) || raw.version !== 1) return null;
-  const numbers = ['seed', 'nextId', 'time', 'distance', 'best', 'camp', 'velocity', 'kills', 'earnings', 'coins', 'spent', 'spawnIn'];
-  if (!numbers.every(field => isFiniteNumber(raw[field]))) return null;
-  if (!Array.isArray(raw.allies) || raw.allies.length !== ROSTER.length) return null;
-  if (!Array.isArray(raw.enemies)) return null;
-  const allies = raw.allies.map((ally, index) => parseAlly(ally, ROSTER[index].id));
-  const enemies = raw.enemies.map(parseEnemy);
-  const upgrades = parseUpgradeLevels(raw.upgrades);
-  const rates = parseRates(raw.rates);
-  const stats = parseStats(raw.stats);
-  const campSnapshot = raw.campSnapshot === null ? null : parseCampSnapshot(raw.campSnapshot);
-  const reasons: PauseReason[] = ['start', 'camp', 'danger', 'manual', null];
-  if (allies.some(ally => ally === null) || enemies.some(enemy => enemy === null) || !upgrades || !rates || !stats) return null;
-  if (raw.campSnapshot !== null && !campSnapshot) return null;
-  if (typeof raw.paused !== 'boolean' || !reasons.includes(raw.pauseReason as PauseReason)) return null;
-  if (raw.dangerAcknowledged !== undefined && typeof raw.dangerAcknowledged !== 'boolean') return null;
-  if (![1, 2, 4].includes(raw.speed as number)) return null;
-  if (!Array.isArray(raw.events) || raw.events.some(event => typeof event !== 'string')) return null;
-  // The browser never simulates time while the page is closed. Effects and comparisons are transient.
-  return {
-    version: 1, seed: (raw.seed as number) >>> 0, nextId: raw.nextId as number,
-    time: raw.time as number, distance: raw.distance as number, best: raw.best as number,
-    camp: raw.camp as number, velocity: raw.velocity as number, kills: raw.kills as number,
-    earnings: raw.earnings as number, coins: raw.coins as number, spent: raw.spent as number,
-    upgrades, allies: allies as AllyState[], enemies: enemies as EnemyState[], effects: [],
-    spawnIn: raw.spawnIn as number, paused: true,
-    pauseReason: (raw.pauseReason as PauseReason) || 'manual', speed: raw.speed as 1 | 2 | 4,
-    dangerAcknowledged: typeof raw.dangerAcknowledged === 'boolean' ? raw.dangerAcknowledged : raw.pauseReason === 'danger',
-    campSnapshot, stats, rates, events: raw.events as string[], comparison: null
-  };
 }
 export const format = (value: number): string => round(value).toFixed(1);

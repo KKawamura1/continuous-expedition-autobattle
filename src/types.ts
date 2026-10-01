@@ -133,3 +133,6 @@ export interface GameState {
   events: string[];
   comparison: Comparison | null;
 }
+
+// Values needed to continue an expedition. Effects and the latest UI comparison are rebuilt on load.
+export type PersistentGameState = Omit<GameState, 'effects' | 'comparison'>;
