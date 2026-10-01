@@ -13,9 +13,18 @@ npm run dev
 
 表示されたURLをブラウザで開きます。iPhoneで試す場合は、同じネットワーク上のPCで起動し、表示されたNetwork URLを開けます。`npm test`で戦闘と拠点のルールを、`npm run build`で配布用ビルドを確認できます。
 
-## Cloudflare Pages
+## Cloudflare Workers
 
-Cloudflare PagesでこのGitHubリポジトリをGit連携すると、`main`への更新を本番公開し、プルリクエストごとにブランチプレビューを作成できます。ビルドコマンドは `npm run build`、出力ディレクトリは `dist` です。`wrangler.jsonc`にも出力先を記載しています。`npm run build`はTypeScriptの型検査を通してからViteで公開ファイルを作ります。
+Cloudflare WorkersのGit連携でこのGitHubリポジトリを接続すると、Production branch（`main`）への更新で本番公開され、Preview buildsを有効にすると他のブランチやプルリクエストにプレビューURLが作られます。プレビューURLはプルリクエストにも投稿されます。
+
+設定値は次の通りです。
+
+- Build command: `npm run build`
+- Deploy command: `npx wrangler deploy`
+- Preview command: `npx wrangler preview`
+- Root directory: `/`
+
+`wrangler.jsonc`ではViteの出力先`dist`をWorkers Static Assetsとして配信し、Workers Preview URLを有効にしています。`npm run build`はTypeScriptの型検査を通してからViteで公開ファイルを作ります。Cloudflareがビルドとデプロイを行うため、GitHub Actionsは使いません。
 
 ## 遊び方
 
