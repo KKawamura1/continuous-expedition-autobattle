@@ -250,7 +250,11 @@ function frame(now: number): void {
   } else accumulator = 0;
   draw();
   if (now - lastUi > 220 || game.paused && !lastUi) {
-    if (game.paused && $('workshop').hidden) { save(); updateUi(true); }
+    if (game.paused && $('workshop').hidden) {
+      save();
+      updateUi(true);
+      $('workshop').scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
     else updateUi(false);
     lastUi = now;
   }
