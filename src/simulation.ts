@@ -413,6 +413,7 @@ export function step(s: GameState, dt = STEP): void {
   generateAhead(s);
   for (const e of s.enemies) moveEnemy(s, e, dt);
   contacts(s);
+  if (allDowned(s)) { enterCollapse(s); return; }
   squadDanger(s, dt);
   moveSquad(s, dt);
   separateAllies(s, dt);

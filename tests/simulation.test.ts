@@ -625,3 +625,18 @@ test('v3 migration translates the battle without changing relative spacing or sa
   assert.equal(saved.frontline, restored.frontline);
   assert.deepEqual(saved.enemies, restored.enemies);
 });
+
+
+test('a whole squad knocked out in one frame collapses with a loadable finite world', () => {
+  const s = createGame(); s.generatedTo = -1e6;
+  for (const [i, a] of s.allies.entries()) {
+    a.x = .1 + i * .18; a.y = .8; a.hp = 1;
+    s.enemies.push({ ...staticEnemy(a.x, .75, 1000, 0), id: i + 1 });
+  }
+  s.enemies.sort((a, b) => Math.abs(a.x - s.allies[1].x) - Math.abs(b.x - s.allies[1].x));
+  resume(s); step(s);
+  assert.equal(s.pauseReason, 'collapse');
+  assert.ok(s.allies.every(a => a.status === 'downed'));
+  assert.ok(Number.isFinite(s.retreatBias));
+  assert.ok(decodeSave(encodeSave(s)));
+});
