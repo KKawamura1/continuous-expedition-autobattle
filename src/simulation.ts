@@ -8,6 +8,9 @@ export const STEP = 1 / 30;
 export const CAMP_INTERVAL = 300;
 export const RECOVERY_SECONDS = 9.5;
 export const REVIVE_HP_RATIO = .45;
+export const ENEMY_ATTACK_RANGE = .19;
+export const DOWNED_RETREAT_DISTANCE = .08;
+export const NAGI_GUARD_RADIUS = .3;
 type Point = Pick<AllyState, 'x' | 'y'>;
 const clamp = (value: number, min: number, max: number): number => Math.max(min, Math.min(max, value));
 const round = (value: number): number => Math.round(value * 10) / 10;
@@ -20,10 +23,10 @@ const maxHp = ROSTER.reduce((sum, a) => sum + a.hp, 0);
 const active = (a: AllyState): boolean => a.status === 'active' && a.hp > 0;
 const allDowned = (s: GameState): boolean => s.allies.every(a => a.status === 'downed');
 
-function resetAlly(a: AllyState, fullHealth = true): void {
+function resetAlly(a: AllyState, fullHealth = true, position?: Point): void {
   const person = ROSTER.find(r => r.id === a.id)!;
-  a.x = person.x;
-  a.y = person.y;
+  a.x = position?.x ?? person.x;
+  a.y = position?.y ?? person.y;
   a.hp = fullHealth ? a.maxHp : a.maxHp * REVIVE_HP_RATIO;
   a.status = 'active';
   a.reviveIn = 0;
@@ -126,7 +129,10 @@ function moveAlly(s: GameState, a: AllyState, dt: number): void {
   const dy = target.y - a.y;
   const d = Math.hypot(dx, dy);
   if (d < .001) return;
-  const difference = d - person.preferredRange;
+  // The active squad opens its spacing while someone is recovering, buying time
+  // without changing any individual movement rule or combat statistics.
+  const desiredRange = person.preferredRange + (s.allies.some(ally => ally.status === 'downed') ? DOWNED_RETREAT_DISTANCE : 0);
+  const difference = d - desiredRange;
   // A small dead band stops the formation from oscillating around its ideal range.
   if (Math.abs(difference) <= .035) return;
   const direction = difference > 0 ? 1 : -1;
@@ -234,12 +240,20 @@ function contacts(s: GameState): void {
     }
   }
 }
-function enemyAttack(s: GameState, e: EnemyState): void {
-  const candidates = s.allies.filter(active).sort((a, b) => length(a, e) - length(b, e));
+function canNagiGuard(e: EnemyState, target: AllyState, nagi: AllyState): boolean {
+  // Guarding is a local link between the attacker, Nagi, and the exposed ally.
+  // Nagi must be close to both and on the enemy-facing side of the ally.
+  return length(nagi, e) <= NAGI_GUARD_RADIUS
+    && length(nagi, target) <= NAGI_GUARD_RADIUS
+    && nagi.y <= target.y + .035;
+}
+function enemyAttack(s: GameState, e: EnemyState): boolean {
+  const candidates = s.allies.filter(a => active(a) && length(a, e) <= ENEMY_ATTACK_RANGE)
+    .sort((a, b) => length(a, e) - length(b, e));
   let target = candidates[0];
-  if (!target) return;
+  if (!target) return false;
   const nagi = s.allies.find(a => a.id === 'nagi')!;
-  if (active(nagi) && target.id !== 'nagi' && length(nagi, target) < .44) target = nagi;
+  if (active(nagi) && target.id !== 'nagi' && canNagiGuard(e, target, nagi)) target = nagi;
   const reduction = target.id === 'nagi' ? 1 - .13 * level(s, 'ward') : 1;
   const incoming = e.damage * reduction;
   const absorbed = Math.min(incoming, target.shield);
@@ -259,13 +273,19 @@ function enemyAttack(s: GameState, e: EnemyState): void {
     damageEnemy(s, e, 12 + absorbed * .9, 'counter'); s.stats.counter++;
     effect(s, target, e, '#8fd3c7');
   }
+  return true;
 }
 function updateRecovery(s: GameState, dt: number): void {
   for (const a of s.allies) {
     if (a.status !== 'downed') continue;
     a.reviveIn = Math.max(0, a.reviveIn - dt);
     if (a.reviveIn > 0) continue;
-    resetAlly(a, false);
+    const activeSquad = s.allies.filter(ally => ally !== a && active(ally));
+    const squadCenterY = activeSquad.length
+      ? activeSquad.reduce((sum, ally) => sum + ally.y, 0) / activeSquad.length
+      : ROSTER.find(person => person.id === a.id)!.y;
+    const entryY = clamp(Math.max(squadCenterY + .055, ROSTER.find(person => person.id === a.id)!.y + .055), .69, .97);
+    resetAlly(a, false, { x: ROSTER.find(person => person.id === a.id)!.x, y: entryY });
     const person = ROSTER.find(r => r.id === a.id)!;
     log(s, `${person.name}が戦線に復帰。`);
   }
@@ -304,7 +324,10 @@ export function step(s: GameState, dt = STEP): void {
     e.impactCd = Math.max(0, (e.impactCd || 0) - dt);
     if (e.y > .66 && e.hp > 0) {
       e.attackCd -= dt;
-      if (e.attackCd <= 0) { enemyAttack(s, e); e.attackCd += 1.55; }
+      if (e.attackCd <= 0) {
+        if (enemyAttack(s, e)) e.attackCd += 1.55;
+        else e.attackCd = .12;
+      }
     }
   }
   contacts(s);
@@ -384,6 +407,7 @@ export function describe(s: GameState): string {
   const crowd = s.enemies.filter(e => e.y > .47).length;
   if (s.paused && s.pauseReason === 'camp') return '中継拠点。購入分を含む全資金を組み直せます。';
   if (s.paused && s.pauseReason === 'danger') return '前線が危険域です。強化して続行するか撤退できます。';
+  if (!s.paused && s.allies.some(a => a.status === 'downed')) return '仲間の復帰まで、隊列を広げて攻撃圏から後退中。';
   if (crowd >= 7) return '敵が前線に滞留中。密集・接触を活かせるか観察。';
   if (s.rates.damage > 5) return '被害が大きく、進軍を押し戻しています。';
   if (s.velocity > 1.4) return '撃破が抵抗を上回り、前線を押し上げています。';

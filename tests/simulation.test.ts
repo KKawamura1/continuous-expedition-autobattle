@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { buy, createGame, pause, refundAtCamp, resume, retreat, step, CAMP_INTERVAL, RECOVERY_SECONDS, REVIVE_HP_RATIO, STEP } from '../src/simulation.ts';
+import { buy, createGame, pause, refundAtCamp, resume, retreat, step, CAMP_INTERVAL, DOWNED_RETREAT_DISTANCE, ENEMY_ATTACK_RANGE, NAGI_GUARD_RADIUS, RECOVERY_SECONDS, REVIVE_HP_RATIO, STEP } from '../src/simulation.ts';
 import { decodeSave, encodeSave, validateSave } from '../src/save.ts';
 import type { AllyState, EnemyState, GameState } from '../src/types.ts';
 
@@ -22,11 +22,11 @@ function down(ally: AllyState, reviveIn = RECOVERY_SECONDS): void {
   ally.shield = 0;
 }
 
-test('unmodified expedition stalls, while an observed crowd can be answered with cleave', () => {
+test('the autonomous squad reaches a camp, while an observed crowd can still be answered with cleave', () => {
   const baseline = createGame(194);
   resume(baseline); run(baseline, 140);
-  assert.equal(baseline.pauseReason, 'danger');
-  assert.ok(baseline.distance < CAMP_INTERVAL);
+  assert.equal(baseline.pauseReason, 'camp');
+  assert.equal(baseline.distance, CAMP_INTERVAL);
 
   const modified = createGame(194);
   resume(modified); run(modified, 45);
@@ -97,8 +97,15 @@ test('saved state reloads paused, preserving expedition progress', () => {
 
 test('resuming from danger continues through the same danger episode', () => {
   const s = createGame(194);
+  s.distance = 66;
+  s.best = 66;
+  s.peakSinceCamp = 66;
+  s.spawnIn = 100;
+  const exposed = s.allies.find(ally => ally.id === 'hibana')!;
+  exposed.hp = 1;
+  s.enemies = [staticEnemy(exposed.x, exposed.y - .09, 10, 0)];
   resume(s);
-  run(s, 140);
+  step(s);
   assert.equal(s.pauseReason, 'danger');
 
   // Older saves do not carry the acknowledgement flag; infer it from the saved danger stop.
@@ -173,7 +180,7 @@ test('allies move toward targets while close range preferences hold formation', 
 
   const holding = createGame();
   holding.spawnIn = 100;
-  holding.enemies = [staticEnemy(.42, .62)];
+  holding.enemies = [staticEnemy(.42, .54)];
   const holdingGou = holding.allies.find(ally => ally.id === 'gou')!;
   for (const ally of holding.allies) if (ally.id !== 'gou') down(ally, 50);
   const before = { x: holdingGou.x, y: holdingGou.y };
@@ -181,6 +188,79 @@ test('allies move toward targets while close range preferences hold formation', 
   run(holding, 4);
   assert.ok(Math.hypot(holdingGou.x - before.x, holdingGou.y - before.y) < .002,
     'an ally at its preferred range should not oscillate in and out');
+});
+
+test('a downed teammate makes survivors hold a wider distance and retreat from nearby enemies', () => {
+  const steady = createGame();
+  const recovering = createGame();
+  for (const s of [steady, recovering]) {
+    s.spawnIn = 100;
+    s.enemies = [staticEnemy(.05, .53, 0, 100)];
+    const gou = s.allies.find(ally => ally.id === 'gou')!;
+    gou.x = .05;
+    gou.y = .72;
+    for (const ally of s.allies) {
+      if (ally.id === 'gou') continue;
+      ally.x = .92;
+      ally.y = .94;
+    }
+  }
+  down(recovering.allies.find(ally => ally.id === 'nagi')!, 20);
+  resume(steady); resume(recovering);
+  run(steady, .25); run(recovering, .25);
+
+  const steadyGou = steady.allies.find(ally => ally.id === 'gou')!;
+  const retreatingGou = recovering.allies.find(ally => ally.id === 'gou')!;
+  assert.ok(steadyGou.y < .72, 'without a casualty, Gou closes to his usual preferred range');
+  assert.ok(retreatingGou.y > .72, 'while Nagi recovers, Gou backs away to buy time');
+  assert.ok(Math.hypot(retreatingGou.x - .05, retreatingGou.y - .53)
+    > Math.hypot(steadyGou.x - .05, steadyGou.y - .53));
+  assert.equal(DOWNED_RETREAT_DISTANCE, .08);
+});
+
+test('enemies attack only allies in range and Nagi guards only a nearby front-side ally', () => {
+  const s = createGame();
+  s.spawnIn = 100;
+  s.enemies = [staticEnemy(.42, .72, 10, 0)];
+  const gou = s.allies.find(ally => ally.id === 'gou')!;
+  for (const ally of s.allies) if (ally.id !== 'gou') down(ally, 100);
+  gou.x = .92; gou.y = .94;
+  resume(s);
+  step(s, STEP);
+  assert.equal(gou.hp, gou.maxHp, 'a distant ally is not a valid attack target');
+  assert.equal(s.enemies[0].attackCd, .12, 'an enemy retries soon when nobody is in reach');
+
+  gou.x = .42; gou.y = .8;
+  s.enemies[0].attackCd = 0;
+  step(s, STEP);
+  assert.equal(gou.hp, gou.maxHp - 10, 'an ally inside the attack radius can be hit');
+  assert.equal(ENEMY_ATTACK_RANGE, .19);
+
+  const guarded = createGame();
+  guarded.spawnIn = 100;
+  guarded.enemies = [staticEnemy(.42, .72, 10, 0)];
+  const guardedGou = guarded.allies.find(ally => ally.id === 'gou')!;
+  const guardedNagi = guarded.allies.find(ally => ally.id === 'nagi')!;
+  for (const ally of guarded.allies) if (ally.id !== 'gou' && ally.id !== 'nagi') down(ally, 100);
+  guardedGou.x = .42; guardedGou.y = .8;
+  guardedNagi.x = .67; guardedNagi.y = .79;
+  resume(guarded); step(guarded, STEP);
+  assert.equal(guardedGou.hp, guardedGou.maxHp, 'Nagi intercepts from within the local guard link');
+  assert.equal(guardedNagi.hp, guardedNagi.maxHp - 10);
+  assert.ok(Math.hypot(guardedNagi.x - .42, guardedNagi.y - .72) <= NAGI_GUARD_RADIUS);
+  assert.ok(Math.hypot(guardedNagi.x - guardedGou.x, guardedNagi.y - guardedGou.y) <= NAGI_GUARD_RADIUS);
+
+  const uncovered = createGame();
+  uncovered.spawnIn = 100;
+  uncovered.enemies = [staticEnemy(.42, .72, 10, 0)];
+  const exposedGou = uncovered.allies.find(ally => ally.id === 'gou')!;
+  const farNagi = uncovered.allies.find(ally => ally.id === 'nagi')!;
+  for (const ally of uncovered.allies) if (ally.id !== 'gou' && ally.id !== 'nagi') down(ally, 100);
+  exposedGou.x = .42; exposedGou.y = .8;
+  farNagi.x = .9; farNagi.y = .94;
+  resume(uncovered); step(uncovered, STEP);
+  assert.equal(exposedGou.hp, exposedGou.maxHp - 10, 'distant Nagi cannot redirect the attack');
+  assert.equal(farNagi.hp, farNagi.maxHp);
 });
 
 test('a downed ally cannot attack and returns after the recovery timer', () => {
@@ -208,7 +288,7 @@ test('a downed ally cannot attack and returns after the recovery timer', () => {
   assert.equal(recovering.reviveIn, 0);
   assert.equal(recovering.hp, recovering.maxHp * REVIVE_HP_RATIO);
   assert.equal(recovering.x, .23);
-  assert.equal(recovering.y, .8);
+  assert.ok(recovering.y > .8, 'a returning teammate enters behind the active squad');
 
   const holdingFront = createGame();
   holdingFront.spawnIn = 100;
