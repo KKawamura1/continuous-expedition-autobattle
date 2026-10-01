@@ -7,12 +7,14 @@ import type {
 // The simulation owns all game rules. Rendering and storage never mutate state directly.
 export const STEP = 1 / 30;
 export const CAMP_INTERVAL = 300;
+export const RECOVERY_SECONDS = 9.5;
+export const REVIVE_HP_RATIO = .45;
 export const ROSTER = [
-  { id: 'gou', name: 'ゴウ', role: '前衛・衝撃', x: .42, y: .77, hp: 100, range: .23, damage: 21, interval: 1.35, color: '#db966c' },
-  { id: 'nagi', name: 'ナギ', role: '庇護・反撃', x: .67, y: .79, hp: 125, range: .22, damage: 13, interval: 1.65, color: '#7eb8b1' },
-  { id: 'hibana', name: 'ヒバナ', role: '連撃', x: .23, y: .8, hp: 75, range: .31, damage: 9, interval: .57, color: '#e8bc71' },
-  { id: 'tsugumi', name: 'ツグミ', role: '射撃・治療', x: .32, y: .91, hp: 78, range: .66, damage: 12, interval: 1.35, color: '#a4c5a0' },
-  { id: 'genzou', name: 'ゲンゾウ', role: '術式', x: .76, y: .9, hp: 78, range: .72, damage: 16, interval: 1.75, color: '#af9dc8' }
+  { id: 'gou', name: 'ゴウ', role: '前衛・衝撃', x: .42, y: .77, hp: 100, range: .23, preferredRange: .15, moveSpeed: .19, damage: 21, interval: 1.35, color: '#db966c' },
+  { id: 'nagi', name: 'ナギ', role: '庇護・反撃', x: .67, y: .79, hp: 125, range: .22, preferredRange: .18, moveSpeed: .14, damage: 13, interval: 1.65, color: '#7eb8b1' },
+  { id: 'hibana', name: 'ヒバナ', role: '連撃', x: .23, y: .8, hp: 75, range: .31, preferredRange: .21, moveSpeed: .24, damage: 9, interval: .57, color: '#e8bc71' },
+  { id: 'tsugumi', name: 'ツグミ', role: '射撃・治療', x: .32, y: .91, hp: 78, range: .66, preferredRange: .48, moveSpeed: .15, damage: 12, interval: 1.35, color: '#a4c5a0' },
+  { id: 'genzou', name: 'ゲンゾウ', role: '術式', x: .76, y: .9, hp: 78, range: .72, preferredRange: .55, moveSpeed: .13, damage: 16, interval: 1.75, color: '#af9dc8' }
 ] satisfies RosterEntry[];
 
 export const UPGRADES = [
@@ -46,6 +48,19 @@ const alive = (s: GameState): EnemyState[] => s.enemies.filter(e => e.hp > 0);
 const length = (a: Point, b: Point): number => Math.hypot(a.x - b.x, a.y - b.y);
 const totalHp = (s: GameState): number => s.allies.reduce((sum, a) => sum + Math.max(0, a.hp), 0);
 const maxHp = ROSTER.reduce((sum, a) => sum + a.hp, 0);
+const active = (a: AllyState): boolean => a.status === 'active' && a.hp > 0;
+const allDowned = (s: GameState): boolean => s.allies.every(a => a.status === 'downed');
+
+function resetAlly(a: AllyState, fullHealth = true): void {
+  const person = ROSTER.find(r => r.id === a.id)!;
+  a.x = person.x;
+  a.y = person.y;
+  a.hp = fullHealth ? a.maxHp : a.maxHp * REVIVE_HP_RATIO;
+  a.status = 'active';
+  a.reviveIn = 0;
+  a.shield = 0;
+  a.cooldown = .3;
+}
 
 export function price(s: GameState, id: string): number {
   const upgrade = UPGRADES.find(u => u.id === id);
@@ -55,9 +70,9 @@ export function price(s: GameState, id: string): number {
 
 export function createGame(seed = 194): GameState {
   return {
-    version: 1, seed: seed >>> 0, nextId: 1, time: 0, distance: 0, best: 0, camp: 0,
+    version: 2, seed: seed >>> 0, nextId: 1, time: 0, distance: 0, best: 0, camp: 0,
     velocity: 0, kills: 0, earnings: 0, coins: 0, spent: 0, upgrades: {},
-    allies: ROSTER.map(a => ({ id: a.id, x: a.x, y: a.y, hp: a.hp, maxHp: a.hp, shield: 0, cooldown: .3, casts: 0 })),
+    allies: ROSTER.map(a => ({ id: a.id, x: a.x, y: a.y, hp: a.hp, maxHp: a.hp, status: 'active', reviveIn: 0, shield: 0, cooldown: .3, casts: 0 })),
     enemies: [], effects: [], spawnIn: 1, paused: true, pauseReason: 'start', dangerAcknowledged: false, speed: 1,
     campSnapshot: null, stats: { kills: 0, damage: 0, income: 0, collisions: 0, counter: 0, period: 0 },
     rates: { kills: 0, damage: 0, income: 0 }, events: ['坑の入り口。前線の変化を見ながら進もう。'], comparison: null
@@ -117,10 +132,65 @@ function acquire(s: GameState, a: AllyState, range: number): EnemyState | null {
     if (e.hp <= 0) continue;
     const d = length(a, e);
     if (d > range) continue;
-    const priority = e.y * 2 - d * .3;
+    const priority = e.y * 2 - d;
     if (priority > score) { target = e; score = priority; }
   }
   return target;
+}
+function movementTarget(s: GameState, a: AllyState): EnemyState | null {
+  let target: EnemyState | null = null;
+  let score = -Infinity;
+  for (const e of s.enemies) {
+    if (e.hp <= 0) continue;
+    const d = length(a, e);
+    if (d > .78) continue;
+    const priority = e.y * 2 - d;
+    if (priority > score) { target = e; score = priority; }
+  }
+  return target;
+}
+function moveAlly(s: GameState, a: AllyState, dt: number): void {
+  const person = ROSTER.find(r => r.id === a.id)!;
+  const target = movementTarget(s, a);
+  if (!target) return;
+  const dx = target.x - a.x;
+  const dy = target.y - a.y;
+  const d = Math.hypot(dx, dy);
+  if (d < .001) return;
+  const difference = d - person.preferredRange;
+  // A small dead band stops the formation from oscillating around its ideal range.
+  if (Math.abs(difference) <= .035) return;
+  const direction = difference > 0 ? 1 : -1;
+  const movement = Math.min(Math.abs(difference) - .035, person.moveSpeed * dt) * direction;
+  a.x = clamp(a.x + dx / d * movement, .08, .92);
+  a.y = clamp(a.y + dy / d * movement, .69, .94);
+}
+function separateAllies(s: GameState, dt: number): void {
+  const minimum = .068;
+  const response = Math.min(1, dt * 30);
+  // A second light pass handles overlap introduced by steering a later pair.
+  for (let pass = 0; pass < 2; pass++) {
+    for (let i = 0; i < s.allies.length; i++) {
+      const a = s.allies[i];
+      if (!active(a)) continue;
+      for (let j = i + 1; j < s.allies.length; j++) {
+        const b = s.allies[j];
+        if (!active(b)) continue;
+        let dx = b.x - a.x;
+        let dy = b.y - a.y;
+        let d = Math.hypot(dx, dy);
+        if (d >= minimum) continue;
+        if (d < .001) { dx = (i + 1) % 2 ? 1 : -1; dy = (j % 2 ? 1 : -1) * .35; d = Math.hypot(dx, dy); }
+        const push = (minimum - d) * response * .5;
+        const nx = dx / d;
+        const ny = dy / d;
+        a.x = clamp(a.x - nx * push, .08, .92);
+        a.y = clamp(a.y - ny * push, .69, .94);
+        b.x = clamp(b.x + nx * push, .08, .92);
+        b.y = clamp(b.y + ny * push, .69, .94);
+      }
+    }
+  }
 }
 function strike(s: GameState, a: AllyState): boolean {
   const base = ROSTER.find(r => r.id === a.id)!;
@@ -154,12 +224,12 @@ function strike(s: GameState, a: AllyState): boolean {
 }
 function heal(s: GameState): void {
   const tsugumi = s.allies.find(a => a.id === 'tsugumi')!;
-  if (tsugumi.hp <= 0) return;
-  const wounded = s.allies.filter(a => a.hp > 0).sort((a, b) => (a.hp / a.maxHp) - (b.hp / b.maxHp))[0];
+  if (!active(tsugumi)) return;
+  const wounded = s.allies.filter(active).sort((a, b) => (a.hp / a.maxHp) - (b.hp / b.maxHp))[0];
   if (wounded) wounded.hp = Math.min(wounded.maxHp, wounded.hp + 2.8);
   if (level(s, 'barrier')) {
     const nagi = s.allies.find(a => a.id === 'nagi')!;
-    if (nagi.hp > 0) nagi.shield = Math.min(20, nagi.shield + 3.2);
+    if (active(nagi)) nagi.shield = Math.min(20, nagi.shield + 3.2);
   }
 }
 function spawn(s: GameState): void {
@@ -196,23 +266,47 @@ function contacts(s: GameState): void {
   }
 }
 function enemyAttack(s: GameState, e: EnemyState): void {
-  const candidates = s.allies.filter(a => a.hp > 0).sort((a, b) => length(a, e) - length(b, e));
+  const candidates = s.allies.filter(active).sort((a, b) => length(a, e) - length(b, e));
   let target = candidates[0];
   if (!target) return;
   const nagi = s.allies.find(a => a.id === 'nagi')!;
-  if (nagi.hp > 0 && target.id !== 'nagi' && length(nagi, target) < .44) target = nagi;
+  if (active(nagi) && target.id !== 'nagi' && length(nagi, target) < .44) target = nagi;
   const reduction = target.id === 'nagi' ? 1 - .13 * level(s, 'ward') : 1;
   const incoming = e.damage * reduction;
   const absorbed = Math.min(incoming, target.shield);
   target.shield -= absorbed;
   const taken = incoming - absorbed;
   target.hp = Math.max(0, target.hp - taken);
+  if (target.hp === 0) {
+    target.status = 'downed';
+    target.reviveIn = RECOVERY_SECONDS;
+    target.shield = 0;
+    const person = ROSTER.find(r => r.id === target.id)!;
+    log(s, `${person.name}が戦闘不能。${RECOVERY_SECONDS}秒後に復帰する。`);
+  }
   s.stats.damage += taken;
   effect(s, e, target, '#ee7b6d');
-  if (target.id === 'nagi' && level(s, 'counter')) {
+  if (target.id === 'nagi' && active(target) && level(s, 'counter')) {
     damageEnemy(s, e, 12 + absorbed * .9, 'counter'); s.stats.counter++;
     effect(s, target, e, '#8fd3c7');
   }
+}
+function updateRecovery(s: GameState, dt: number): void {
+  for (const a of s.allies) {
+    if (a.status !== 'downed') continue;
+    a.reviveIn = Math.max(0, a.reviveIn - dt);
+    if (a.reviveIn > 0) continue;
+    resetAlly(a, false);
+    const person = ROSTER.find(r => r.id === a.id)!;
+    log(s, `${person.name}が戦線に復帰。`);
+  }
+}
+function enterCollapse(s: GameState): void {
+  if (s.pauseReason === 'collapse') return;
+  s.paused = true;
+  s.pauseReason = 'collapse';
+  s.velocity = 0;
+  log(s, '戦線崩壊。調査隊は戦闘を継続できない。最後の拠点へ撤退しよう。');
 }
 function updateRates(s: GameState, dt: number): void {
   s.stats.period += dt;
@@ -224,8 +318,10 @@ function updateRates(s: GameState, dt: number): void {
 }
 export function step(s: GameState, dt = STEP): void {
   if (s.paused) return;
+  if (allDowned(s)) { enterCollapse(s); return; }
   dt = clamp(dt, 0, STEP);
   s.time += dt;
+  updateRecovery(s, dt);
   s.spawnIn -= dt;
   if (s.spawnIn <= 0 && s.enemies.length < 42) {
     spawn(s);
@@ -243,8 +339,10 @@ export function step(s: GameState, dt = STEP): void {
     }
   }
   contacts(s);
+  for (const a of s.allies) if (active(a)) moveAlly(s, a, dt);
+  separateAllies(s, dt);
   for (const a of s.allies) {
-    if (a.hp <= 0) continue;
+    if (!active(a)) continue;
     a.cooldown -= dt;
     if (a.cooldown > 0) continue;
     if (strike(s, a)) {
@@ -253,6 +351,7 @@ export function step(s: GameState, dt = STEP): void {
       if (a.id === 'tsugumi') heal(s);
     } else a.cooldown = .1;
   }
+  if (allDowned(s)) { enterCollapse(s); return; }
   s.enemies = alive(s);
   s.effects = s.effects.filter(fx => (fx.life -= dt) > 0);
   updateRates(s, dt);
@@ -266,7 +365,7 @@ export function step(s: GameState, dt = STEP): void {
     s.distance = nextCamp; s.camp = nextCamp; s.velocity = 0; s.paused = true; s.pauseReason = 'camp';
     s.dangerAcknowledged = false;
     s.enemies = []; s.effects = []; s.spawnIn = .8;
-    for (const a of s.allies) { a.hp = a.maxHp; a.shield = 0; a.cooldown = .3; }
+    for (const a of s.allies) resetAlly(a);
     s.campSnapshot = snapshot(s);
     log(s, `${nextCamp}mの中継拠点に到達。遠征資金を組み直せる。`);
   } else {
@@ -289,19 +388,25 @@ export function retreat(s: GameState): boolean {
   s.enemies = []; s.effects = []; s.spawnIn = .8; s.velocity = 0; s.rates = { kills: 0, damage: 0, income: 0 };
   s.stats = { kills: 0, damage: 0, income: 0, collisions: 0, counter: 0, period: 0 };
   s.dangerAcknowledged = false;
-  for (const a of s.allies) { a.hp = a.maxHp; a.shield = 0; a.cooldown = .3; }
+  for (const a of s.allies) resetAlly(a);
   s.paused = true; s.pauseReason = 'camp'; s.comparison = null;
   log(s, `${saved.camp}mの拠点へ撤退。途中の資金と購入は戻った。`);
   return true;
 }
-export function resume(s: GameState): void {
-  if (!s.paused) return;
+export function resume(s: GameState): boolean {
+  if (s.pauseReason === 'collapse' || allDowned(s)) {
+    enterCollapse(s);
+    return false;
+  }
+  if (!s.paused) return true;
   if (s.pauseReason === 'camp') s.campSnapshot = snapshot(s);
   s.paused = false; s.pauseReason = null;
   if (s.distance === s.camp && s.velocity < 0) s.velocity = 0;
+  return true;
 }
 export function pause(s: GameState): void { if (!s.paused) { s.paused = true; s.pauseReason = 'manual'; } }
 export function describe(s: GameState): string {
+  if (s.paused && s.pauseReason === 'collapse') return '戦線崩壊。調査隊は最後の拠点へ撤退する必要があります。';
   const crowd = s.enemies.filter(e => e.y > .47).length;
   if (s.paused && s.pauseReason === 'camp') return '中継拠点。購入分を含む全資金を組み直せます。';
   if (s.paused && s.pauseReason === 'danger') return '前線が危険域です。強化して続行するか撤退できます。';
@@ -344,12 +449,22 @@ function parseCampSnapshot(raw: unknown): CampSnapshot | null {
     upgrades, earnings: raw.earnings as number, kills: raw.kills as number
   };
 }
-function parseAlly(raw: unknown, expectedId: AllyId): AllyState | null {
+function parseAlly(raw: unknown, expectedId: AllyId, legacySave: boolean): AllyState | null {
   if (!isRecord(raw) || raw.id !== expectedId) return null;
   if (![raw.x, raw.y, raw.hp, raw.maxHp, raw.shield, raw.cooldown, raw.casts].every(isFiniteNumber)) return null;
+  const status = raw.status === undefined && legacySave
+    ? ((raw.hp as number) <= 0 ? 'downed' : 'active')
+    : raw.status;
+  if (status !== 'active' && status !== 'downed') return null;
+  const reviveIn = raw.reviveIn === undefined && legacySave
+    ? (status === 'downed' ? RECOVERY_SECONDS : 0)
+    : raw.reviveIn;
+  if (!isFiniteNumber(reviveIn) || reviveIn < 0) return null;
+  if (status === 'active' && ((raw.hp as number) <= 0 || reviveIn !== 0)) return null;
+  if (status === 'downed' && ((raw.hp as number) !== 0 || reviveIn <= 0)) return null;
   return {
     id: expectedId, x: raw.x as number, y: raw.y as number, hp: raw.hp as number,
-    maxHp: raw.maxHp as number, shield: raw.shield as number, cooldown: raw.cooldown as number,
+    maxHp: raw.maxHp as number, status, reviveIn, shield: raw.shield as number, cooldown: raw.cooldown as number,
     casts: raw.casts as number
   };
 }
@@ -381,18 +496,19 @@ function parseStats(raw: unknown): Stats | null {
   return { ...rates, collisions: raw.collisions as number, counter: raw.counter as number, period: raw.period as number };
 }
 export function validateSave(raw: unknown): GameState | null {
-  if (!isRecord(raw) || raw.version !== 1) return null;
+  if (!isRecord(raw) || (raw.version !== 1 && raw.version !== 2)) return null;
+  const legacySave = raw.version === 1;
   const numbers = ['seed', 'nextId', 'time', 'distance', 'best', 'camp', 'velocity', 'kills', 'earnings', 'coins', 'spent', 'spawnIn'];
   if (!numbers.every(field => isFiniteNumber(raw[field]))) return null;
   if (!Array.isArray(raw.allies) || raw.allies.length !== ROSTER.length) return null;
   if (!Array.isArray(raw.enemies)) return null;
-  const allies = raw.allies.map((ally, index) => parseAlly(ally, ROSTER[index].id));
+  const allies = raw.allies.map((ally, index) => parseAlly(ally, ROSTER[index].id, legacySave));
   const enemies = raw.enemies.map(parseEnemy);
   const upgrades = parseUpgradeLevels(raw.upgrades);
   const rates = parseRates(raw.rates);
   const stats = parseStats(raw.stats);
   const campSnapshot = raw.campSnapshot === null ? null : parseCampSnapshot(raw.campSnapshot);
-  const reasons: PauseReason[] = ['start', 'camp', 'danger', 'manual', null];
+  const reasons: PauseReason[] = ['start', 'camp', 'danger', 'manual', 'collapse', null];
   if (allies.some(ally => ally === null) || enemies.some(enemy => enemy === null) || !upgrades || !rates || !stats) return null;
   if (raw.campSnapshot !== null && !campSnapshot) return null;
   if (typeof raw.paused !== 'boolean' || !reasons.includes(raw.pauseReason as PauseReason)) return null;
@@ -400,14 +516,16 @@ export function validateSave(raw: unknown): GameState | null {
   if (![1, 2, 4].includes(raw.speed as number)) return null;
   if (!Array.isArray(raw.events) || raw.events.some(event => typeof event !== 'string')) return null;
   // The browser never simulates time while the page is closed. Effects and comparisons are transient.
+  const collapsed = (allies as AllyState[]).every(ally => ally.status === 'downed');
+  if (!collapsed && raw.pauseReason === 'collapse') return null;
   return {
-    version: 1, seed: (raw.seed as number) >>> 0, nextId: raw.nextId as number,
+    version: 2, seed: (raw.seed as number) >>> 0, nextId: raw.nextId as number,
     time: raw.time as number, distance: raw.distance as number, best: raw.best as number,
     camp: raw.camp as number, velocity: raw.velocity as number, kills: raw.kills as number,
     earnings: raw.earnings as number, coins: raw.coins as number, spent: raw.spent as number,
     upgrades, allies: allies as AllyState[], enemies: enemies as EnemyState[], effects: [],
     spawnIn: raw.spawnIn as number, paused: true,
-    pauseReason: (raw.pauseReason as PauseReason) || 'manual', speed: raw.speed as 1 | 2 | 4,
+    pauseReason: collapsed ? 'collapse' : (raw.pauseReason as PauseReason) || 'manual', speed: raw.speed as 1 | 2 | 4,
     dangerAcknowledged: typeof raw.dangerAcknowledged === 'boolean' ? raw.dangerAcknowledged : raw.pauseReason === 'danger',
     campSnapshot, stats, rates, events: raw.events as string[], comparison: null
   };

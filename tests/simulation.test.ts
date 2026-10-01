@@ -1,10 +1,24 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { buy, createGame, pause, refundAtCamp, resume, retreat, step, validateSave, CAMP_INTERVAL, STEP } from '../src/simulation.ts';
-import type { GameState } from '../src/types.ts';
+import { buy, createGame, pause, refundAtCamp, resume, retreat, step, validateSave, CAMP_INTERVAL, RECOVERY_SECONDS, REVIVE_HP_RATIO, STEP } from '../src/simulation.ts';
+import type { AllyState, EnemyState, GameState } from '../src/types.ts';
 
 function run(s: GameState, seconds: number): void {
   for (let i = 0; i < Math.round(seconds / STEP) && !s.paused; i++) step(s, STEP);
+}
+
+function staticEnemy(x: number, y: number, damage = 0, attackCd = 100): EnemyState {
+  return {
+    id: 1, kind: 'stray', name: '徘徊体', hp: 1000, maxHp: 1000, speed: 0, damage, mass: 1,
+    pressure: 1, bounty: 13, radius: .026, color: '#d49c82', x, y, vy: 0, attackCd, flash: 0, impactCd: 0
+  };
+}
+
+function down(ally: AllyState, reviveIn = RECOVERY_SECONDS): void {
+  ally.hp = 0;
+  ally.status = 'downed';
+  ally.reviveIn = reviveIn;
+  ally.shield = 0;
 }
 
 test('unmodified expedition stalls, while an observed crowd can be answered with cleave', () => {
@@ -83,6 +97,14 @@ test('resuming from danger continues through the same danger episode', () => {
   if (!loaded) throw new Error('Expected the danger save to be valid.');
   assert.equal(loaded.dangerAcknowledged, true);
 
+  // Keep this acknowledgement test focused on the pause state, without the old run's crowded front.
+  loaded.enemies = [];
+  loaded.spawnIn = 100;
+  loaded.distance = loaded.camp + 10;
+  loaded.best = loaded.camp + 100;
+  loaded.velocity = 0;
+  for (const ally of loaded.allies) { ally.hp = ally.maxHp; ally.status = 'active'; ally.reviveIn = 0; }
+
   const previousTime = loaded.time;
   resume(loaded);
   run(loaded, 1);
@@ -92,14 +114,18 @@ test('resuming from danger continues through the same danger episode', () => {
 
   // Once the party and front leave the danger condition, a later danger can pause again.
   loaded.distance = loaded.camp + 20;
-  for (const ally of loaded.allies) ally.hp = ally.maxHp;
+  for (const ally of loaded.allies) { ally.hp = ally.maxHp; ally.status = 'active'; ally.reviveIn = 0; }
   step(loaded);
   assert.equal(loaded.dangerAcknowledged, false);
-  loaded.distance = loaded.camp + 17;
-  for (const ally of loaded.allies) ally.hp = 0;
+  for (const ally of loaded.allies) down(ally);
+  loaded.paused = false;
+  loaded.pauseReason = null;
+  loaded.dangerAcknowledged = true;
   step(loaded);
   assert.equal(loaded.paused, true);
-  assert.equal(loaded.pauseReason, 'danger');
+  assert.equal(loaded.pauseReason, 'collapse');
+  assert.equal(resume(loaded), false);
+  assert.equal(loaded.pauseReason, 'collapse');
 });
 
 test('save validation restores enemy kinds from earlier saves and rejects broken state', () => {
@@ -114,4 +140,153 @@ test('save validation restores enemy kinds from earlier saves and rejects broken
 
   oldSave.upgrades = null;
   assert.equal(validateSave(oldSave), null);
+});
+
+test('allies move toward targets while close range preferences hold formation', () => {
+  const moving = createGame();
+  moving.spawnIn = 100;
+  moving.enemies = [staticEnemy(.88, .48)];
+  resume(moving);
+  run(moving, 2);
+
+  const gou = moving.allies.find(ally => ally.id === 'gou')!;
+  const tsugumi = moving.allies.find(ally => ally.id === 'tsugumi')!;
+  assert.ok(gou.x > .5, 'Gou should follow a target to the right');
+  assert.ok(gou.y < .7, 'Gou should move forward toward a target');
+  assert.ok(Math.hypot(gou.x - .88, gou.y - .48) < Math.hypot(tsugumi.x - .88, tsugumi.y - .48) - .2,
+    'the melee frontliner should close more than the ranged supporter');
+  for (let i = 0; i < moving.allies.length; i++) for (let j = i + 1; j < moving.allies.length; j++) {
+    assert.ok(Math.hypot(moving.allies[i].x - moving.allies[j].x, moving.allies[i].y - moving.allies[j].y) > .06,
+      'allies should stay visibly separated');
+  }
+
+  const holding = createGame();
+  holding.spawnIn = 100;
+  holding.enemies = [staticEnemy(.42, .62)];
+  const holdingGou = holding.allies.find(ally => ally.id === 'gou')!;
+  for (const ally of holding.allies) if (ally.id !== 'gou') down(ally, 50);
+  const before = { x: holdingGou.x, y: holdingGou.y };
+  resume(holding);
+  run(holding, 4);
+  assert.ok(Math.hypot(holdingGou.x - before.x, holdingGou.y - before.y) < .002,
+    'an ally at its preferred range should not oscillate in and out');
+});
+
+test('a downed ally cannot attack and returns after the recovery timer', () => {
+  const s = createGame();
+  s.spawnIn = 100;
+  s.enemies = [staticEnemy(.52, .48)];
+  const gou = s.allies.find(ally => ally.id === 'gou')!;
+  down(gou, 50);
+  for (const ally of s.allies) if (ally !== gou) ally.cooldown = 100;
+  const enemyHp = s.enemies[0].hp;
+  resume(s);
+  run(s, .25);
+  assert.equal(s.enemies[0].hp, enemyHp);
+
+  const recovery = createGame();
+  recovery.spawnIn = 100;
+  const recovering = recovery.allies.find(ally => ally.id === 'hibana')!;
+  down(recovering);
+  resume(recovery);
+  run(recovery, RECOVERY_SECONDS - .2);
+  assert.equal(recovering.status, 'downed');
+  assert.ok(recovering.reviveIn > 0 && recovering.reviveIn <= .25);
+  run(recovery, .3);
+  assert.equal(recovering.status, 'active');
+  assert.equal(recovering.reviveIn, 0);
+  assert.equal(recovering.hp, recovering.maxHp * REVIVE_HP_RATIO);
+  assert.equal(recovering.x, .23);
+  assert.equal(recovering.y, .8);
+});
+
+test('an attack starts the visible 9.5 second recovery timer', () => {
+  const s = createGame();
+  s.spawnIn = 100;
+  const hibana = s.allies.find(ally => ally.id === 'hibana')!;
+  hibana.hp = 1;
+  s.enemies = [staticEnemy(.23, .71, 10, 0)];
+  resume(s);
+  step(s, STEP);
+  assert.equal(hibana.status, 'downed');
+  assert.equal(hibana.hp, 0);
+  assert.equal(hibana.reviveIn, RECOVERY_SECONDS);
+});
+
+test('collapse ignores danger acknowledgement and retreat restores the saved camp state', () => {
+  for (const acknowledged of [false, true]) {
+    const s = createGame();
+    s.paused = false;
+    s.pauseReason = null;
+    s.dangerAcknowledged = acknowledged;
+    for (const ally of s.allies) down(ally);
+    const before = s.time;
+    step(s, STEP);
+    assert.equal(s.pauseReason, 'collapse');
+    assert.equal(s.paused, true);
+    assert.equal(s.time, before);
+    assert.equal(resume(s), false);
+    step(s, STEP);
+    assert.equal(s.time, before, 'simulation must stay frozen until retreat');
+  }
+
+  const s = createGame();
+  s.camp = 90;
+  s.distance = 160;
+  s.best = 180;
+  s.coins = 90;
+  s.spent = 35;
+  s.upgrades.hook = 1;
+  s.campSnapshot = { camp: 90, coins: 70, spent: 20, upgrades: { hook: 1 }, earnings: 120, kills: 8 };
+  for (const ally of s.allies) down(ally);
+  s.paused = true;
+  s.pauseReason = 'collapse';
+  assert.equal(retreat(s), true);
+  assert.equal(s.pauseReason, 'camp');
+  assert.equal(s.distance, 90);
+  assert.equal(s.coins, 70);
+  assert.equal(s.spent, 20);
+  assert.deepEqual(s.upgrades, { hook: 1 });
+  assert.ok(s.allies.every(ally => ally.status === 'active' && ally.hp === ally.maxHp));
+});
+
+test('manual pause and resume still freeze and restart the simulation', () => {
+  const s = createGame();
+  resume(s);
+  run(s, 2);
+  pause(s);
+  const pausedAt = s.time;
+  assert.equal(s.pauseReason, 'manual');
+  assert.equal(resume(s), true);
+  run(s, 1);
+  assert.ok(s.time > pausedAt);
+  assert.equal(s.pauseReason, null);
+});
+
+test('save validation migrates v1 allies and preserves v2 recovery and collapse state', () => {
+  const legacy = JSON.parse(JSON.stringify(createGame())) as Record<string, unknown>;
+  legacy.version = 1;
+  const oldAllies = legacy.allies as Array<Record<string, unknown>>;
+  oldAllies[1].hp = 0;
+  for (const ally of oldAllies) { delete ally.status; delete ally.reviveIn; }
+  const migrated = validateSave(legacy);
+  assert.equal(migrated?.version, 2);
+  assert.equal(migrated?.allies[1].status, 'downed');
+  assert.equal(migrated?.allies[1].reviveIn, RECOVERY_SECONDS);
+
+  const downedSave = createGame();
+  down(downedSave.allies[0], 3.25);
+  const loaded = validateSave(JSON.parse(JSON.stringify(downedSave)));
+  assert.equal(loaded?.allies[0].status, 'downed');
+  assert.equal(loaded?.allies[0].reviveIn, 3.25);
+
+  for (const ally of downedSave.allies) down(ally, 7);
+  downedSave.paused = true;
+  downedSave.pauseReason = 'collapse';
+  const collapsed = validateSave(JSON.parse(JSON.stringify(downedSave)));
+  assert.equal(collapsed?.pauseReason, 'collapse');
+  assert.equal(collapsed?.paused, true);
+  const invalid = JSON.parse(JSON.stringify(downedSave)) as GameState;
+  invalid.allies[0].reviveIn = -1;
+  assert.equal(validateSave(invalid), null);
 });
