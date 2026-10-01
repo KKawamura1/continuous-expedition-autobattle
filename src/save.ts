@@ -97,7 +97,10 @@ function parseEnemy(raw: unknown): EnemyState | null {
 }
 function parseRates(raw: unknown): Rates | null {
   if (!isRecord(raw) || ![raw.kills, raw.damage, raw.income].every(isFiniteNumber)) return null;
-  return { kills: raw.kills as number, damage: raw.damage as number, income: raw.income as number };
+  if (raw.recovery !== undefined && !isFiniteNumber(raw.recovery)) return null;
+  const recovery = (raw.recovery as number | undefined) ?? 0;
+  if (recovery < 0) return null;
+  return { kills: raw.kills as number, damage: raw.damage as number, recovery, income: raw.income as number };
 }
 function parseStats(raw: unknown): Stats | null {
   const rates = parseRates(raw);

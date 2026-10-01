@@ -86,6 +86,7 @@ export interface EffectState {
 export interface Rates {
   kills: number;
   damage: number;
+  recovery: number;
   income: number;
 }
 

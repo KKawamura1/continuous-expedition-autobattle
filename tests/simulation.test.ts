@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { buy, createGame, pause, refundAtCamp, resume, retreat, step, CAMP_INTERVAL, DOWNED_RETREAT_DISTANCE, ENEMY_ATTACK_RANGE, NAGI_GUARD_RADIUS, RECOVERY_SECONDS, REVIVE_HP_RATIO, STEP } from '../src/simulation.ts';
+import { buy, createGame, pause, refundAtCamp, resume, retreat, step, CAMP_INTERVAL, DOWNED_RETREAT_DISTANCE, ENEMY_ATTACK_RANGE, INJURY_RETREAT_DISTANCE, NAGI_GUARD_RADIUS, PASSIVE_RECOVERY_PER_SECOND, RECOVERY_SECONDS, REVIVE_HP_RATIO, STEP } from '../src/simulation.ts';
 import { decodeSave, encodeSave, validateSave } from '../src/save.ts';
 import type { AllyState, EnemyState, GameState } from '../src/types.ts';
 
@@ -76,7 +76,7 @@ test('a purchase requires pause and refunds only at a reached camp', () => {
 test('saved state reloads paused, preserving expedition progress', () => {
   const s = createGame(); resume(s); run(s, 20);
   s.effects.push({ x: .2, y: .3, toX: .4, toY: .5, color: '#fff', kind: 'line', life: .2 });
-  s.comparison = { kills: 1, damage: 2, income: 3, velocity: 4, time: 5, name: 'test' };
+  s.comparison = { kills: 1, damage: 2, recovery: 0, income: 3, velocity: 4, time: 5, name: 'test' };
   const serialized = encodeSave(s);
   const persisted = JSON.parse(serialized) as Record<string, unknown>;
   assert.equal(Object.hasOwn(persisted, 'effects'), false);
@@ -87,6 +87,7 @@ test('saved state reloads paused, preserving expedition progress', () => {
   assert.ok(loaded.paused);
   assert.equal(loaded.distance, s.distance);
   assert.equal(loaded.coins, s.coins);
+  assert.equal(loaded.rates.recovery, s.rates.recovery);
   assert.deepEqual(loaded.effects, []);
   assert.equal(loaded.comparison, null);
   const before = loaded.time; step(loaded);
@@ -193,7 +194,8 @@ test('allies move toward targets while close range preferences hold formation', 
 test('a downed teammate makes survivors hold a wider distance and retreat from nearby enemies', () => {
   const steady = createGame();
   const recovering = createGame();
-  for (const s of [steady, recovering]) {
+  const wounded = createGame();
+  for (const s of [steady, recovering, wounded]) {
     s.spawnIn = 100;
     s.enemies = [staticEnemy(.05, .53, 0, 100)];
     const gou = s.allies.find(ally => ally.id === 'gou')!;
@@ -206,16 +208,46 @@ test('a downed teammate makes survivors hold a wider distance and retreat from n
     }
   }
   down(recovering.allies.find(ally => ally.id === 'nagi')!, 20);
-  resume(steady); resume(recovering);
-  run(steady, .25); run(recovering, .25);
+  const woundedGou = wounded.allies.find(ally => ally.id === 'gou')!;
+  woundedGou.hp = woundedGou.maxHp * REVIVE_HP_RATIO;
+  resume(steady); resume(recovering); resume(wounded);
+  run(steady, .25); run(recovering, .25); run(wounded, .25);
 
   const steadyGou = steady.allies.find(ally => ally.id === 'gou')!;
   const retreatingGou = recovering.allies.find(ally => ally.id === 'gou')!;
   assert.ok(steadyGou.y < .72, 'without a casualty, Gou closes to his usual preferred range');
   assert.ok(retreatingGou.y > .72, 'while Nagi recovers, Gou backs away to buy time');
+  assert.ok(woundedGou.y > .72, 'a low-health ally holds a safer range after returning');
   assert.ok(Math.hypot(retreatingGou.x - .05, retreatingGou.y - .53)
     > Math.hypot(steadyGou.x - .05, steadyGou.y - .53));
   assert.equal(DOWNED_RETREAT_DISTANCE, .08);
+  assert.equal(INJURY_RETREAT_DISTANCE, .18);
+});
+
+test('actual time-based recovery offsets damage and affects front movement', () => {
+  const recovering = createGame();
+  recovering.spawnIn = 100;
+  const wounded = recovering.allies.find(ally => ally.id === 'gou')!;
+  wounded.hp = 50;
+  resume(recovering);
+  run(recovering, 6);
+  assert.ok(wounded.hp > 50, 'active allies recover HP over time');
+  assert.ok(wounded.hp <= wounded.maxHp);
+  assert.ok(recovering.rates.recovery > 0, 'the observed rate includes actual HP restored');
+  assert.ok(recovering.rates.recovery > recovering.rates.damage);
+  assert.ok(recovering.velocity > 0, 'a net recovery period nudges the front forward');
+  assert.equal(PASSIVE_RECOVERY_PER_SECOND, .45);
+
+  const pressured = createGame();
+  pressured.spawnIn = 100;
+  pressured.enemies = [staticEnemy(.42, .72, 30, 0)];
+  const gou = pressured.allies.find(ally => ally.id === 'gou')!;
+  for (const ally of pressured.allies) if (ally.id !== 'gou') down(ally, 100);
+  gou.x = .42; gou.y = .8;
+  resume(pressured);
+  run(pressured, 2.1);
+  assert.ok(pressured.rates.damage > pressured.rates.recovery, 'HP loss can outpace automatic recovery');
+  assert.ok(pressured.velocity < 0, 'net HP loss pushes the front backward');
 });
 
 test('enemies attack only allies in range and Nagi guards only a nearby front-side ally', () => {
@@ -286,7 +318,8 @@ test('a downed ally cannot attack and returns after the recovery timer', () => {
   run(recovery, .3);
   assert.equal(recovering.status, 'active');
   assert.equal(recovering.reviveIn, 0);
-  assert.equal(recovering.hp, recovering.maxHp * REVIVE_HP_RATIO);
+  assert.ok(recovering.hp >= recovering.maxHp * REVIVE_HP_RATIO);
+  assert.ok(recovering.hp < recovering.maxHp * (REVIVE_HP_RATIO + .01));
   assert.equal(recovering.x, .23);
   assert.ok(recovering.y > .8, 'a returning teammate enters behind the active squad');
 
@@ -301,7 +334,8 @@ test('a downed ally cannot attack and returns after the recovery timer', () => {
   resume(holdingFront);
   run(holdingFront, RECOVERY_SECONDS + .2);
   assert.equal(returning.status, 'active', 'the remaining four should hold the line until a teammate returns');
-  assert.equal(returning.hp, returning.maxHp * REVIVE_HP_RATIO);
+  assert.ok(returning.hp >= returning.maxHp * REVIVE_HP_RATIO);
+  assert.ok(returning.hp < returning.maxHp * (REVIVE_HP_RATIO + .01));
   assert.ok(holdingFront.allies.filter(ally => ally.status === 'active').length >= 4);
 });
 
@@ -409,6 +443,13 @@ test('save validation migrates older saves and preserves recovery, collapse, and
   assert.equal(migrated?.version, 3);
   assert.equal(migrated?.allies[1].status, 'downed');
   assert.equal(migrated?.allies[1].reviveIn, RECOVERY_SECONDS);
+
+  const preRecoveryRates = JSON.parse(JSON.stringify(createGame())) as Record<string, unknown>;
+  delete (preRecoveryRates.rates as Record<string, unknown>).recovery;
+  delete (preRecoveryRates.stats as Record<string, unknown>).recovery;
+  const migratedRates = validateSave(preRecoveryRates);
+  assert.equal(migratedRates?.rates.recovery, 0);
+  assert.equal(migratedRates?.stats.recovery, 0);
 
   const versionTwo = JSON.parse(JSON.stringify(createGame())) as Record<string, unknown>;
   versionTwo.version = 2;

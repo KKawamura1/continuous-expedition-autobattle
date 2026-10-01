@@ -10,7 +10,9 @@ export const RECOVERY_SECONDS = 9.5;
 export const REVIVE_HP_RATIO = .45;
 export const ENEMY_ATTACK_RANGE = .19;
 export const DOWNED_RETREAT_DISTANCE = .08;
+export const INJURY_RETREAT_DISTANCE = .18;
 export const NAGI_GUARD_RADIUS = .3;
+export const PASSIVE_RECOVERY_PER_SECOND = .45;
 type Point = Pick<AllyState, 'x' | 'y'>;
 const clamp = (value: number, min: number, max: number): number => Math.max(min, Math.min(max, value));
 const round = (value: number): number => Math.round(value * 10) / 10;
@@ -46,8 +48,8 @@ export function createGame(seed = 194): GameState {
     velocity: 0, kills: 0, earnings: 0, coins: 0, spent: 0, upgrades: {},
     allies: ROSTER.map(a => ({ id: a.id, x: a.x, y: a.y, hp: a.hp, maxHp: a.hp, status: 'active', reviveIn: 0, shield: 0, cooldown: .3, casts: 0 })),
     enemies: [], effects: [], spawnIn: 1, paused: true, pauseReason: 'start', dangerAcknowledged: false, speed: 1,
-    campSnapshot: null, stats: { kills: 0, damage: 0, income: 0, collisions: 0, counter: 0, period: 0 },
-    rates: { kills: 0, damage: 0, income: 0 }, events: ['坑の入り口。前線の変化を見ながら進もう。'], comparison: null
+    campSnapshot: null, stats: { kills: 0, damage: 0, recovery: 0, income: 0, collisions: 0, counter: 0, period: 0 },
+    rates: { kills: 0, damage: 0, recovery: 0, income: 0 }, events: ['坑の入り口。前線の変化を見ながら進もう。'], comparison: null
   };
 }
 
@@ -94,6 +96,12 @@ function damageEnemy(s: GameState, enemy: EnemyState, amount: number, source: Da
     if (source === 'collision') s.stats.collisions++;
   }
 }
+function recoverHp(s: GameState, ally: AllyState, amount: number): void {
+  const recovered = Math.min(amount, ally.maxHp - ally.hp);
+  if (recovered <= 0) return;
+  ally.hp += recovered;
+  s.stats.recovery += recovered;
+}
 function shove(enemy: EnemyState, impulse: number): void {
   enemy.vy += impulse / Math.sqrt(enemy.mass);
   enemy.vy = clamp(enemy.vy, -.32, .32);
@@ -131,7 +139,9 @@ function moveAlly(s: GameState, a: AllyState, dt: number): void {
   if (d < .001) return;
   // The active squad opens its spacing while someone is recovering, buying time
   // without changing any individual movement rule or combat statistics.
-  const desiredRange = person.preferredRange + (s.allies.some(ally => ally.status === 'downed') ? DOWNED_RETREAT_DISTANCE : 0);
+  const downedSpacing = s.allies.some(ally => ally.status === 'downed') ? DOWNED_RETREAT_DISTANCE : 0;
+  const injurySpacing = (1 - clamp(a.hp / a.maxHp, 0, 1)) * INJURY_RETREAT_DISTANCE;
+  const desiredRange = person.preferredRange + downedSpacing + injurySpacing;
   const difference = d - desiredRange;
   // A small dead band stops the formation from oscillating around its ideal range.
   if (Math.abs(difference) <= .035) return;
@@ -201,11 +211,14 @@ function heal(s: GameState): void {
   const tsugumi = s.allies.find(a => a.id === 'tsugumi')!;
   if (!active(tsugumi)) return;
   const wounded = s.allies.filter(active).sort((a, b) => (a.hp / a.maxHp) - (b.hp / b.maxHp))[0];
-  if (wounded) wounded.hp = Math.min(wounded.maxHp, wounded.hp + 2.8);
+  if (wounded) recoverHp(s, wounded, 2.8);
   if (level(s, 'barrier')) {
     const nagi = s.allies.find(a => a.id === 'nagi')!;
     if (active(nagi)) nagi.shield = Math.min(20, nagi.shield + 3.2);
   }
+}
+function recoverActiveAllies(s: GameState, dt: number): void {
+  for (const ally of s.allies) if (active(ally)) recoverHp(s, ally, PASSIVE_RECOVERY_PER_SECOND * dt);
 }
 function spawn(s: GameState): void {
   const tier = Math.floor(s.distance / CAMP_INTERVAL);
@@ -259,7 +272,8 @@ function enemyAttack(s: GameState, e: EnemyState): boolean {
   const absorbed = Math.min(incoming, target.shield);
   target.shield -= absorbed;
   const taken = incoming - absorbed;
-  target.hp = Math.max(0, target.hp - taken);
+  const actualLoss = Math.min(target.hp, taken);
+  target.hp -= actualLoss;
   if (target.hp === 0) {
     target.status = 'downed';
     target.reviveIn = RECOVERY_SECONDS;
@@ -267,7 +281,7 @@ function enemyAttack(s: GameState, e: EnemyState): boolean {
     const person = ROSTER.find(r => r.id === target.id)!;
     log(s, `${person.name}が戦闘不能。${RECOVERY_SECONDS}秒後に復帰する。`);
   }
-  s.stats.damage += taken;
+  s.stats.damage += actualLoss;
   effect(s, e, target, '#ee7b6d');
   if (target.id === 'nagi' && active(target) && level(s, 'counter')) {
     damageEnemy(s, e, 12 + absorbed * .9, 'counter'); s.stats.counter++;
@@ -280,13 +294,14 @@ function updateRecovery(s: GameState, dt: number): void {
     if (a.status !== 'downed') continue;
     a.reviveIn = Math.max(0, a.reviveIn - dt);
     if (a.reviveIn > 0) continue;
+    const person = ROSTER.find(entry => entry.id === a.id)!;
     const activeSquad = s.allies.filter(ally => ally !== a && active(ally));
     const squadCenterY = activeSquad.length
       ? activeSquad.reduce((sum, ally) => sum + ally.y, 0) / activeSquad.length
-      : ROSTER.find(person => person.id === a.id)!.y;
-    const entryY = clamp(Math.max(squadCenterY + .055, ROSTER.find(person => person.id === a.id)!.y + .055), .69, .97);
-    resetAlly(a, false, { x: ROSTER.find(person => person.id === a.id)!.x, y: entryY });
-    const person = ROSTER.find(r => r.id === a.id)!;
+      : person.y;
+    const entryY = clamp(Math.max(squadCenterY + .055, person.y + .055), .69, .97);
+    resetAlly(a, false, { x: person.x, y: entryY });
+    s.stats.recovery += a.hp;
     log(s, `${person.name}が戦線に復帰。`);
   }
 }
@@ -302,8 +317,8 @@ function updateRates(s: GameState, dt: number): void {
   if (s.stats.period < 2) return;
   const span = s.stats.period;
   const blend = .55;
-  for (const k of ['kills', 'damage', 'income'] as const) s.rates[k] = s.rates[k] * (1 - blend) + (s.stats[k] / span) * blend;
-  s.stats.kills = 0; s.stats.damage = 0; s.stats.income = 0; s.stats.period = 0;
+  for (const k of ['kills', 'damage', 'recovery', 'income'] as const) s.rates[k] = s.rates[k] * (1 - blend) + (s.stats[k] / span) * blend;
+  s.stats.kills = 0; s.stats.damage = 0; s.stats.recovery = 0; s.stats.income = 0; s.stats.period = 0;
 }
 export function step(s: GameState, dt = STEP): void {
   if (s.paused) return;
@@ -311,6 +326,7 @@ export function step(s: GameState, dt = STEP): void {
   dt = clamp(dt, 0, STEP);
   s.time += dt;
   updateRecovery(s, dt);
+  recoverActiveAllies(s, dt);
   s.spawnIn -= dt;
   if (s.spawnIn <= 0 && s.enemies.length < 42) {
     spawn(s);
@@ -348,7 +364,12 @@ export function step(s: GameState, dt = STEP): void {
   s.effects = s.effects.filter(fx => (fx.life -= dt) > 0);
   updateRates(s, dt);
   // Pressure is a short rolling observation, so each kill produces a visible push without a one-frame jump.
-  const target = clamp(5.6 * s.rates.kills - 1.25 - .53 * s.rates.damage, -3.8, 6.5);
+  const netDamage = s.rates.damage - s.rates.recovery;
+  let target = 5.6 * s.rates.kills - 1.25 - .53 * netDamage;
+  // A sustained net HP recovery means the formation can regain ground even
+  // during a lull; recovery is counted only when missing HP is actually restored.
+  if (netDamage < -.1) target = Math.max(target, .25);
+  target = clamp(target, -3.8, 6.5);
   s.velocity += (target - s.velocity) * Math.min(1, dt * 1.15);
   s.distance = Math.max(s.camp, s.distance + s.velocity * dt);
   s.best = Math.max(s.best, s.distance);
@@ -382,8 +403,8 @@ export function retreat(s: GameState): boolean {
   s.distance = saved.camp; s.camp = saved.camp; s.peakSinceCamp = saved.camp;
   s.coins = saved.coins; s.spent = saved.spent;
   s.upgrades = { ...saved.upgrades }; s.earnings = saved.earnings; s.kills = saved.kills;
-  s.enemies = []; s.effects = []; s.spawnIn = .8; s.velocity = 0; s.rates = { kills: 0, damage: 0, income: 0 };
-  s.stats = { kills: 0, damage: 0, income: 0, collisions: 0, counter: 0, period: 0 };
+  s.enemies = []; s.effects = []; s.spawnIn = .8; s.velocity = 0; s.rates = { kills: 0, damage: 0, recovery: 0, income: 0 };
+  s.stats = { kills: 0, damage: 0, recovery: 0, income: 0, collisions: 0, counter: 0, period: 0 };
   s.dangerAcknowledged = false;
   for (const a of s.allies) resetAlly(a);
   s.paused = true; s.pauseReason = 'camp'; s.comparison = null;
@@ -408,8 +429,9 @@ export function describe(s: GameState): string {
   if (s.paused && s.pauseReason === 'camp') return '中継拠点。購入分を含む全資金を組み直せます。';
   if (s.paused && s.pauseReason === 'danger') return '前線が危険域です。強化して続行するか撤退できます。';
   if (!s.paused && s.allies.some(a => a.status === 'downed')) return '仲間の復帰まで、隊列を広げて攻撃圏から後退中。';
+  if (!s.paused && s.allies.some(a => a.hp / a.maxHp < .55)) return '傷ついた隊員が後方で回復中。HPに応じて敵との距離を保つ。';
   if (crowd >= 7) return '敵が前線に滞留中。密集・接触を活かせるか観察。';
-  if (s.rates.damage > 5) return '被害が大きく、進軍を押し戻しています。';
+  if (s.rates.damage - s.rates.recovery > 5) return '受ける被害が回復を上回り、進軍を押し戻しています。';
   if (s.velocity > 1.4) return '撃破が抵抗を上回り、前線を押し上げています。';
   if (s.velocity < -.7) return '敵の処理が追いつかず、前線が後退中。';
   return '敵の数、被害、撃破の変化を見て改造しよう。';

@@ -42,7 +42,7 @@ app.innerHTML = `
     <section class="readout" aria-label="観測値">
       <div><span>滞留</span><strong id="crowd">0</strong><small>体</small></div>
       <div><span>撃破圧</span><strong id="killRate">0.0</strong><small>/秒</small></div>
-      <div><span>被害</span><strong id="damageRate">0.0</strong><small>/秒</small></div>
+      <div><span>被害</span><strong id="damageRate">0.0</strong><small id="recoveryRate">回復 0.0/秒</small></div>
       <div><span>収入</span><strong id="incomeRate">0.0</strong><small>G/秒</small></div>
     </section>
     <p class="observation" id="observation"></p>
@@ -105,6 +105,7 @@ function updateUi(force = false) {
   $('crowd').textContent = String(game.enemies.filter(e => e.y > .47).length);
   $('killRate').textContent = format(game.rates.kills);
   $('damageRate').textContent = format(game.rates.damage);
+  $('recoveryRate').textContent = `回復 ${format(game.rates.recovery)}/秒`;
   $('incomeRate').textContent = format(game.rates.income);
   $('observation').textContent = describe(game);
   $('coins').textContent = number(game.coins);
