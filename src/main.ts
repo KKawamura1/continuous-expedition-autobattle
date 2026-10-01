@@ -1,5 +1,5 @@
 import {
-  CAMP_INTERVAL, STEP, buy, createGame, describe, format, pause, price,
+  CAMP_INTERVAL, STEP, nearbyEnemyCount, buy, createGame, describe, format, pause, price,
   refundAtCamp, resume, retreat, step
 } from './simulation.ts';
 import { createBattleRenderer } from './canvas.ts';
@@ -35,9 +35,9 @@ app.innerHTML = `
     </section>
     <div class="track"><div id="trackFill"></div><span id="trackStart">0m</span><span id="trackEnd">300m 拠点</span></div>
     <section class="battle-panel" aria-label="戦場">
-      <canvas id="battle" role="img" aria-label="敵が上から現れ、下の5人が自律して戦う戦場"></canvas>
+      <canvas id="battle" role="img" aria-label="坑道を進み、敵と遭遇して5人が自律して戦う戦場"></canvas>
       <div class="battle-overlay"><span id="fieldLabel">坑口の境界</span><span class="live" id="liveTag">一時停止中</span></div>
-      <div class="battle-footer"><span>↑ 敵の流入</span><span>前線 · 自律戦闘</span><span>↓ 調査隊</span></div>
+      <div class="battle-footer"><span>↑ 未探索の坑道</span><span>前線 · 自律戦闘</span><span>↓ 調査隊</span></div>
     </section>
     <section class="readout" aria-label="観測値">
       <div><span>滞留</span><strong id="crowd">0</strong><small>体</small></div>
@@ -60,7 +60,7 @@ app.innerHTML = `
       <button id="resume" class="primary full">進軍を再開 ↗</button>
     </section>
     <section class="journal"><div class="section-title">観測記録 <span id="best"></span></div><p id="event"></p></section>
-    <footer>試作版 · 進軍式と数値はプレイで検証する仮説です</footer>
+    <footer>試作版 · 移動ルールと数値はプレイで検証する仮説です</footer>
   </main>`;
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string): T => {
@@ -102,7 +102,7 @@ function updateUi(force = false) {
   $('milestone').textContent = game.pauseReason === 'camp' ? '中継拠点に到達' : `次の拠点まで ${Math.max(0, Math.ceil((segment + 1) * CAMP_INTERVAL - game.distance))}m`;
   $('chapter').textContent = segment === 0 ? '旧市街 / 坑口' : segment === 1 ? '坑内 / 記録層' : `坑内 / 深度 ${segment + 1}`;
   $('fieldLabel').textContent = segment === 0 ? '坑口の境界' : segment === 1 ? '記録の残る層' : '未知の坑道';
-  $('crowd').textContent = String(game.enemies.filter(e => e.y > .47).length);
+  $('crowd').textContent = String(nearbyEnemyCount(game));
   $('killRate').textContent = format(game.rates.kills);
   $('damageRate').textContent = format(game.rates.damage);
   $('recoveryRate').textContent = `回復 ${format(game.rates.recovery)}/秒`;

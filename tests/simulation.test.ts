@@ -1,11 +1,19 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { buy, createGame, pause, refundAtCamp, resume, retreat, step, CAMP_INTERVAL, DOWNED_RETREAT_DISTANCE, ENEMY_ATTACK_RANGE, INJURY_RETREAT_DISTANCE, NAGI_GUARD_RADIUS, PASSIVE_RECOVERY_PER_SECOND, RECOVERY_SECONDS, REVIVE_HP_RATIO, STEP } from '../src/simulation.ts';
+import { buy, createGame, pause, refundAtCamp, resume, retreat, step, CAMP_INTERVAL, DOWNED_RETREAT_DISTANCE, ENEMY_ATTACK_RANGE, INJURY_RETREAT_DISTANCE, NAGI_GUARD_RADIUS, PASSIVE_RECOVERY_PER_SECOND, RECOVERY_SECONDS, REVIVE_HP_RATIO, STEP, calculateFrontline, updateFrontline, generateAhead, WORLD_ORIGIN_Y, METRES_PER_UNIT, CAMERA_FRONT_Y } from '../src/simulation.ts';
 import { decodeSave, encodeSave, validateSave } from '../src/save.ts';
 import type { AllyState, EnemyState, GameState } from '../src/types.ts';
 
 function run(s: GameState, seconds: number): void {
   for (let i = 0; i < Math.round(seconds / STEP) && !s.paused; i++) step(s, STEP);
+}
+
+function setProgress(s: GameState, distance: number): void {
+  const shift = WORLD_ORIGIN_Y - distance / METRES_PER_UNIT - calculateFrontline(s);
+  for (const a of s.allies) a.y += shift;
+  for (const e of s.enemies) e.y += shift;
+  s.frontline = calculateFrontline(s);
+  s.distance = distance;
 }
 
 function staticEnemy(x: number, y: number, damage = 0, attackCd = 100): EnemyState {
@@ -26,7 +34,7 @@ test('the autonomous squad reaches a camp, while an observed crowd can still be 
   const baseline = createGame(194);
   resume(baseline); run(baseline, 140);
   assert.equal(baseline.pauseReason, 'camp');
-  assert.equal(baseline.distance, CAMP_INTERVAL);
+  assert.ok(baseline.distance >= CAMP_INTERVAL && baseline.distance < CAMP_INTERVAL + 1);
 
   const modified = createGame(194);
   resume(modified); run(modified, 45);
@@ -36,7 +44,7 @@ test('the autonomous squad reaches a camp, while an observed crowd can still be 
   assert.ok(modified.coins < before);
   resume(modified); run(modified, 100);
   assert.equal(modified.pauseReason, 'camp');
-  assert.equal(modified.distance, CAMP_INTERVAL);
+  assert.ok(modified.distance >= CAMP_INTERVAL && modified.distance < CAMP_INTERVAL + 1);
 
   const defensive = createGame(194);
   resume(defensive); run(defensive, 45); pause(defensive);
@@ -44,7 +52,7 @@ test('the autonomous squad reaches a camp, while an observed crowd can still be 
   assert.equal(buy(defensive, 'barrier'), true);
   resume(defensive); run(defensive, 100);
   assert.equal(defensive.pauseReason, 'camp');
-  assert.ok(defensive.stats.counter > 0);
+  assert.equal(defensive.upgrades.counter, 1);
 });
 
 test('a purchase requires pause and refunds only at a reached camp', () => {
@@ -101,7 +109,7 @@ test('resuming from danger continues through the same danger episode', () => {
   s.distance = 66;
   s.best = 66;
   s.peakSinceCamp = 66;
-  s.spawnIn = 100;
+  s.generatedTo = -1e6;
   const exposed = s.allies.find(ally => ally.id === 'hibana')!;
   exposed.hp = 1;
   s.enemies = [staticEnemy(exposed.x, exposed.y - .09, 10, 0)];
@@ -118,8 +126,8 @@ test('resuming from danger continues through the same danger episode', () => {
 
   // Keep this acknowledgement test focused on the pause state, without the old run's crowded front.
   loaded.enemies = [];
-  loaded.spawnIn = 100;
-  loaded.distance = loaded.camp + 10;
+  loaded.generatedTo = -1e6;
+  setProgress(loaded, loaded.camp + 10);
   loaded.best = loaded.camp + 100;
   loaded.velocity = 0;
   for (const ally of loaded.allies) { ally.hp = ally.maxHp; ally.status = 'active'; ally.reviveIn = 0; }
@@ -132,7 +140,7 @@ test('resuming from danger continues through the same danger episode', () => {
   assert.ok(loaded.time > previousTime);
 
   // Once the party and front leave the danger condition, a later danger can pause again.
-  loaded.distance = loaded.camp + 20;
+  setProgress(loaded, loaded.camp + 20);
   for (const ally of loaded.allies) { ally.hp = ally.maxHp; ally.status = 'active'; ally.reviveIn = 0; }
   step(loaded);
   assert.equal(loaded.dangerAcknowledged, false);
@@ -163,7 +171,7 @@ test('save validation restores enemy kinds from earlier saves and rejects broken
 
 test('allies move toward targets while close range preferences hold formation', () => {
   const moving = createGame();
-  moving.spawnIn = 100;
+  moving.generatedTo = -1e6;
   moving.enemies = [staticEnemy(.88, .48)];
   resume(moving);
   run(moving, 2);
@@ -180,10 +188,11 @@ test('allies move toward targets while close range preferences hold formation', 
   }
 
   const holding = createGame();
-  holding.spawnIn = 100;
+  holding.generatedTo = -1e6;
   holding.enemies = [staticEnemy(.42, .54)];
   const holdingGou = holding.allies.find(ally => ally.id === 'gou')!;
-  for (const ally of holding.allies) if (ally.id !== 'gou') down(ally, 50);
+  holdingGou.y = .69;
+  holding.allies = [holdingGou];
   const before = { x: holdingGou.x, y: holdingGou.y };
   resume(holding);
   run(holding, 4);
@@ -196,7 +205,7 @@ test('a downed teammate makes survivors hold a wider distance and retreat from n
   const recovering = createGame();
   const wounded = createGame();
   for (const s of [steady, recovering, wounded]) {
-    s.spawnIn = 100;
+    s.generatedTo = -1e6;
     s.enemies = [staticEnemy(.05, .53, 0, 100)];
     const gou = s.allies.find(ally => ally.id === 'gou')!;
     gou.x = .05;
@@ -226,7 +235,7 @@ test('a downed teammate makes survivors hold a wider distance and retreat from n
 
 test('actual time-based recovery offsets damage and affects front movement', () => {
   const recovering = createGame();
-  recovering.spawnIn = 100;
+  recovering.generatedTo = -1e6;
   const wounded = recovering.allies.find(ally => ally.id === 'gou')!;
   wounded.hp = 50;
   resume(recovering);
@@ -239,7 +248,7 @@ test('actual time-based recovery offsets damage and affects front movement', () 
   assert.equal(PASSIVE_RECOVERY_PER_SECOND, .45);
 
   const pressured = createGame();
-  pressured.spawnIn = 100;
+  pressured.generatedTo = -1e6;
   pressured.enemies = [staticEnemy(.42, .72, 30, 0)];
   const gou = pressured.allies.find(ally => ally.id === 'gou')!;
   for (const ally of pressured.allies) if (ally.id !== 'gou') down(ally, 100);
@@ -252,7 +261,7 @@ test('actual time-based recovery offsets damage and affects front movement', () 
   const nonlethalPressure = createGame();
   const sameBalanceWithKills = createGame();
   for (const state of [nonlethalPressure, sameBalanceWithKills]) {
-    state.spawnIn = 100;
+    state.generatedTo = -1e6;
     state.rates = { kills: 0, damage: 2, recovery: .5, income: 0 };
     resume(state);
   }
@@ -261,14 +270,14 @@ test('actual time-based recovery offsets damage and affects front movement', () 
   assert.equal(sameBalanceWithKills.velocity, nonlethalPressure.velocity, 'kills do not directly affect front speed');
 
   const sustainedLoss = createGame();
-  sustainedLoss.spawnIn = 100;
+  sustainedLoss.generatedTo = -1e6;
   sustainedLoss.rates = { kills: 10, damage: 20, recovery: 0, income: 0 };
   resume(sustainedLoss);
   run(sustainedLoss, 2.1);
   assert.ok(sustainedLoss.velocity < 0, 'sustained net loss turns the front backward');
 
   const safeAdvance = createGame();
-  safeAdvance.spawnIn = 100;
+  safeAdvance.generatedTo = -1e6;
   resume(safeAdvance);
   step(safeAdvance, STEP);
   assert.ok(safeAdvance.velocity > 0, 'the squad advances while it takes no damage');
@@ -276,7 +285,7 @@ test('actual time-based recovery offsets damage and affects front movement', () 
 
 test('enemies attack only allies in range and Nagi guards only a nearby front-side ally', () => {
   const s = createGame();
-  s.spawnIn = 100;
+  s.generatedTo = -1e6;
   s.enemies = [staticEnemy(.42, .72, 10, 0)];
   const gou = s.allies.find(ally => ally.id === 'gou')!;
   for (const ally of s.allies) if (ally.id !== 'gou') down(ally, 100);
@@ -321,7 +330,7 @@ test('enemies attack only allies in range and Nagi guards only a nearby front-si
 
 test('a downed ally cannot attack and returns after the recovery timer', () => {
   const s = createGame();
-  s.spawnIn = 100;
+  s.generatedTo = -1e6;
   s.enemies = [staticEnemy(.52, .48)];
   const gou = s.allies.find(ally => ally.id === 'gou')!;
   down(gou, 50);
@@ -332,7 +341,7 @@ test('a downed ally cannot attack and returns after the recovery timer', () => {
   assert.equal(s.enemies[0].hp, enemyHp);
 
   const recovery = createGame();
-  recovery.spawnIn = 100;
+  recovery.generatedTo = -1e6;
   const recovering = recovery.allies.find(ally => ally.id === 'hibana')!;
   down(recovering);
   resume(recovery);
@@ -344,11 +353,10 @@ test('a downed ally cannot attack and returns after the recovery timer', () => {
   assert.equal(recovering.reviveIn, 0);
   assert.ok(recovering.hp >= recovering.maxHp * REVIVE_HP_RATIO);
   assert.ok(recovering.hp < recovering.maxHp * (REVIVE_HP_RATIO + .01));
-  assert.equal(recovering.x, .23);
-  assert.ok(recovering.y > .8, 'a returning teammate enters behind the active squad');
+  assert.ok(recovering.y > Math.min(...recovery.allies.filter(a => a !== recovering).map(a => a.y)), 'a returning teammate enters behind the active squad');
 
   const holdingFront = createGame();
-  holdingFront.spawnIn = 100;
+  holdingFront.generatedTo = -1e6;
   holdingFront.enemies = [
     staticEnemy(.37, .72, 3, 0), staticEnemy(.47, .72, 3, .2), staticEnemy(.57, .72, 3, .4),
     staticEnemy(.67, .72, 3, .6), staticEnemy(.77, .72, 3, .8)
@@ -365,7 +373,7 @@ test('a downed ally cannot attack and returns after the recovery timer', () => {
 
 test('an attack starts the visible 9.5 second recovery timer', () => {
   const s = createGame();
-  s.spawnIn = 100;
+  s.generatedTo = -1e6;
   const hibana = s.allies.find(ally => ally.id === 'hibana')!;
   hibana.hp = 1;
   s.enemies = [staticEnemy(.23, .71, 10, 0)];
@@ -437,7 +445,7 @@ test('collapse ignores danger acknowledgement and retreat restores the saved cam
   assert.equal(s.spent, 20);
   assert.deepEqual(s.upgrades, { hook: 1 });
   assert.ok(s.allies.every(ally => ally.status === 'active' && ally.hp === ally.maxHp));
-  s.spawnIn = 100;
+  s.generatedTo = -1e6;
   resume(s);
   step(s, STEP);
   assert.equal(s.pauseReason, null, 'old high-water progress must not immediately stop a new attempt');
@@ -464,7 +472,7 @@ test('save validation migrates older saves and preserves recovery, collapse, and
   oldAllies[1].hp = 0;
   for (const ally of oldAllies) { delete ally.status; delete ally.reviveIn; }
   const migrated = validateSave(legacy);
-  assert.equal(migrated?.version, 3);
+  assert.equal(migrated?.version, 4);
   assert.equal(migrated?.allies[1].status, 'downed');
   assert.equal(migrated?.allies[1].reviveIn, RECOVERY_SECONDS);
 
@@ -481,7 +489,7 @@ test('save validation migrates older saves and preserves recovery, collapse, and
   versionTwo.distance = 74;
   versionTwo.best = 160;
   const migratedV2 = validateSave(versionTwo);
-  assert.equal(migratedV2?.version, 3);
+  assert.equal(migratedV2?.version, 4);
   assert.equal(migratedV2?.peakSinceCamp, 74);
 
   const downedSave = createGame();
@@ -500,4 +508,120 @@ test('save validation migrates older saves and preserves recovery, collapse, and
   const invalid = JSON.parse(JSON.stringify(downedSave)) as GameState;
   invalid.allies[0].reviveIn = -1;
   assert.equal(validateSave(invalid), null);
+});
+
+
+test('world frontline is the rearward of the leading ally and the deepest surviving enemy', () => {
+  const s = createGame();
+  s.generatedTo = -1e6;
+  s.allies[0].y = -2;
+  s.enemies = [staticEnemy(.1, -1), { ...staticEnemy(.9, -3), id: 2 }];
+  assert.equal(calculateFrontline(s), -1);
+  s.enemies[0].hp = 0;
+  assert.equal(calculateFrontline(s), -2);
+  s.enemies = [];
+  assert.equal(calculateFrontline(s), -2);
+  down(s.allies[0]);
+  assert.equal(calculateFrontline(s), .79);
+});
+
+test('progress and measured speed come only from world displacement and camera follows with lag', () => {
+  const s = createGame();
+  s.generatedTo = -1e6;
+  const before = s.frontline;
+  for (const a of s.allies) a.y -= .1;
+  const camera = s.cameraY;
+  updateFrontline(s, .5);
+  assert.ok(Math.abs(s.distance - 4) < 1e-8);
+  assert.ok(Math.abs(s.velocity - 8) < 1e-8);
+  assert.ok(s.cameraY < camera && s.cameraY > s.frontline - CAMERA_FRONT_Y);
+  assert.equal(s.frontline, before - .1);
+  for (const a of s.allies) a.y += .2;
+  updateFrontline(s, .5);
+  assert.ok(s.velocity < 0 && s.distance < 0);
+});
+
+test('edge enemies pursue in two dimensions, retarget casualties and can cross the old screen limits', () => {
+  const s = createGame(); s.generatedTo = -1e6;
+  const e = { ...staticEnemy(.05, .9), speed: .08, alerted: true };
+  s.enemies = [e];
+  for (const a of s.allies) { a.x = .7; a.y = 1.15; a.cooldown = 100; }
+  resume(s); run(s, 1);
+  assert.ok(e.x > .05 && e.y > .9);
+  const nearest = s.allies.reduce((a, b) => Math.hypot(a.x - e.x, a.y - e.y) < Math.hypot(b.x - e.x, b.y - e.y) ? a : b);
+  down(nearest, 100);
+  const beforeX = e.x; run(s, .5);
+  assert.ok(e.x > beforeX, 'pursuit continues toward another active ally');
+  assert.ok(s.allies.filter(a => a.status === 'active').every(a => a.y > .94));
+});
+
+test('an untouched region waits offscreen, waiting adds no enemies and retreat retains their IDs and HP', () => {
+  const s = createGame(); generateAhead(s);
+  const original = s.enemies.map(e => ({ id: e.id, hp: e.hp, y: e.y }));
+  const frontier = s.generatedTo;
+  assert.ok(s.enemies.some(e => e.y - s.cameraY < 0 && !e.alerted));
+  for (let i = 0; i < 100; i++) generateAhead(s);
+  assert.deepEqual(s.enemies.map(e => ({ id: e.id, hp: e.hp, y: e.y })), original);
+  s.frontline += .5; s.cameraY += .5; generateAhead(s);
+  assert.equal(s.generatedTo, frontier);
+  assert.deepEqual(s.enemies.map(e => ({ id: e.id, hp: e.hp, y: e.y })), original);
+  s.frontline -= 2; s.cameraY -= 2; generateAhead(s);
+  assert.ok(s.generatedTo < frontier && s.enemies.length > original.length);
+  assert.deepEqual(s.enemies.slice(0, original.length).map(e => ({ id: e.id, hp: e.hp, y: e.y })), original);
+});
+
+test('collective pressure retreats every active ally and cohesion bounds a long unopposed march', () => {
+  const s = createGame(); s.generatedTo = -1e6;
+  s.rates.damage = 24;
+  s.retreatBias = 1;
+  const positions = s.allies.map(a => a.y);
+  resume(s); run(s, .5);
+  assert.ok(s.allies.every((a, i) => a.y > positions[i]));
+  assert.ok(s.velocity < 0);
+  const marching = createGame(); marching.generatedTo = -1e6;
+  resume(marching); run(marching, 40);
+  const spread = Math.max(...marching.allies.map(a => a.y)) - Math.min(...marching.allies.map(a => a.y));
+  assert.ok(spread < .6, 'the fastest ally cannot leave the backline far behind');
+});
+
+test('a rearward intruder is intercepted rather than left behind while marching forward', () => {
+  const s = createGame(); s.generatedTo = -1e6;
+  const intruder = staticEnemy(.5, 1.0);
+  const ahead = { ...staticEnemy(.5, .2), id: 2 };
+  s.enemies = [intruder, ahead];
+  for (const a of s.allies) a.cooldown = 100;
+  const before = s.allies.map(a => a.y);
+  resume(s); run(s, 1);
+  assert.ok(s.allies.every((a, i) => a.y > before[i]));
+  assert.equal(s.frontline, intruder.y);
+});
+
+test('local protection and counterattack still work at arbitrary world depth', () => {
+  const s = createGame(); s.generatedTo = -1e6; s.camp = 300; s.peakSinceCamp = 300;
+  const gou = s.allies[0], nagi = s.allies[1];
+  gou.x = .42; gou.y = -10;
+  nagi.x = .52; nagi.y = -10.04;
+  for (const a of s.allies.slice(2)) { a.y = -9.5; a.cooldown = 100; }
+  s.enemies = [staticEnemy(.42, -10.1, 10, 0)];
+  s.upgrades.counter = 1;
+  resume(s); step(s);
+  assert.equal(gou.hp, gou.maxHp);
+  assert.equal(nagi.hp, nagi.maxHp - 10);
+  assert.equal(s.stats.counter, 1);
+});
+
+test('v3 migration translates the battle without changing relative spacing or saved distance', () => {
+  const old = JSON.parse(encodeSave(createGame()));
+  old.version = 3; old.distance = 145; old.best = 145; old.peakSinceCamp = 145;
+  old.enemies = [staticEnemy(.3, .6)];
+  const restored = validateSave(old)!;
+  assert.ok(restored);
+  assert.equal(restored.version, 4);
+  assert.equal(restored.distance, 145);
+  assert.ok(Math.abs(restored.allies[0].y - restored.enemies[0].y - .17) < 1e-8);
+  assert.ok(Math.abs((WORLD_ORIGIN_Y - calculateFrontline(restored)) * METRES_PER_UNIT - 145) < 1e-8);
+  const saved = decodeSave(encodeSave(restored))!;
+  assert.equal(saved.generatedTo, restored.generatedTo);
+  assert.equal(saved.frontline, restored.frontline);
+  assert.deepEqual(saved.enemies, restored.enemies);
 });

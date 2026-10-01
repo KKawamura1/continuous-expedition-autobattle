@@ -16,24 +16,33 @@ export function createBattleRenderer(canvas: HTMLCanvasElement): { resize: () =>
     context.setTransform(canvas.width, 0, 0, canvas.height, 0, 0);
   }
 
-  function draw(game: GameState): void {
-    const t = game.distance;
+  function draw(world: GameState): void {
+    // Only the renderer projects world coordinates; combat never sees screen y.
+    const game = {
+      ...world,
+      allies: world.allies.map(a => ({ ...a, y: a.y - world.cameraY })),
+      enemies: world.enemies.filter(e => e.y - world.cameraY > -.1 && e.y - world.cameraY < 1.1)
+        .map(e => ({ ...e, y: e.y - world.cameraY })),
+      effects: world.effects.map(f => ({ ...f, y: f.y - world.cameraY, toY: f.toY - world.cameraY }))
+    };
+    const frontY = world.frontline - world.cameraY;
+    const t = -world.cameraY;
     const bg = context.createLinearGradient(0, 0, 0, 1);
     bg.addColorStop(0, '#344251'); bg.addColorStop(.55, '#263641'); bg.addColorStop(1, '#192b35');
     context.fillStyle = bg; context.fillRect(0, 0, 1, 1);
     context.strokeStyle = 'rgba(192,213,207,.07)'; context.lineWidth = .002;
     for (let i = 0; i < 9; i++) {
-      const y = ((i / 8 + t / 240) % 1);
+      const y = ((i / 8 + t) % 1 + 1) % 1;
       context.beginPath(); context.moveTo(.04, y); context.lineTo(.96, y); context.stroke();
     }
     context.setLineDash([.009, .02]); context.strokeStyle = 'rgba(172,204,193,.13)';
     for (const x of [.12, .5, .88]) { context.beginPath(); context.moveTo(x, 0); context.lineTo(x, 1); context.stroke(); }
     context.setLineDash([]);
-    context.fillStyle = 'rgba(10,24,31,.25)'; context.fillRect(0, .67, 1, .33);
+    context.fillStyle = 'rgba(10,24,31,.25)'; context.fillRect(0, frontY, 1, 1 - frontY);
     context.strokeStyle = '#92bcae'; context.lineWidth = .003; context.setLineDash([.03, .015]);
-    context.beginPath(); context.moveTo(.04, .68); context.lineTo(.96, .68); context.stroke(); context.setLineDash([]);
+    context.beginPath(); context.moveTo(.04, frontY); context.lineTo(.96, frontY); context.stroke(); context.setLineDash([]);
     context.save(); context.setTransform(canvas.width / canvas.clientWidth, 0, 0, canvas.height / canvas.clientHeight, 0, 0);
-    context.font = '600 10px system-ui'; context.fillStyle = 'rgba(194,219,207,.7)'; context.fillText('FRONT LINE', .05 * canvas.clientWidth, .665 * canvas.clientHeight); context.restore();
+    context.font = '600 10px system-ui'; context.fillStyle = 'rgba(194,219,207,.7)'; context.fillText('FRONT LINE', .05 * canvas.clientWidth, (frontY - .015) * canvas.clientHeight); context.restore();
     for (const e of game.enemies) {
       context.fillStyle = 'rgba(0,0,0,.22)'; context.beginPath(); context.ellipse(e.x, e.y + .012, e.radius * 1.25, e.radius * .55, 0, 0, Math.PI * 2); context.fill();
       context.fillStyle = e.flash > 0 ? '#fff4d5' : e.color; context.strokeStyle = '#12242d'; context.lineWidth = .005;

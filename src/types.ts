@@ -71,6 +71,7 @@ export interface EnemyState extends Omit<EnemyKindDefinition, 'id'> {
   attackCd: number;
   flash: number;
   impactCd: number;
+  alerted?: boolean;
 }
 
 export interface EffectState {
@@ -112,7 +113,7 @@ export interface Comparison extends Rates {
 }
 
 export interface GameState {
-  version: 3;
+  version: 4;
   seed: number;
   nextId: number;
   time: number;
@@ -129,7 +130,12 @@ export interface GameState {
   allies: AllyState[];
   enemies: EnemyState[];
   effects: EffectState[];
-  spawnIn: number;
+  // y decreases toward unexplored territory; coordinates are never camera-relative.
+  frontline: number;
+  cameraY: number;
+  generatedTo: number;
+  retreatBias: number;
+  spawnIn: number; // retained for migration of earlier saves; not a spawn timer
   paused: boolean;
   pauseReason: PauseReason;
   dangerAcknowledged: boolean;
