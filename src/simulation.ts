@@ -4,6 +4,12 @@ import type {
 } from './types.ts';
 
 // The simulation owns all game rules. Rendering and storage never mutate state directly.
+// One world-coordinate unit is 40 metres. Positive progress is -y.
+export const METRES_PER_UNIT = 40;
+export const WORLD_ORIGIN_Y = .77;
+export const CAMERA_FRONT_Y = .4;
+export const REGION_LENGTH = .36;
+export const ENEMY_NOTICE_RANGE = .82;
 export const STEP = 1 / 30;
 export const CAMP_INTERVAL = 300;
 export const RECOVERY_SECONDS = 9.5;
@@ -44,10 +50,10 @@ export function price(s: GameState, id: string): number {
 
 export function createGame(seed = 194): GameState {
   return {
-    version: 3, seed: seed >>> 0, nextId: 1, time: 0, distance: 0, best: 0, peakSinceCamp: 0, camp: 0,
+    version: 4, seed: seed >>> 0, nextId: 1, time: 0, distance: 0, best: 0, peakSinceCamp: 0, camp: 0,
     velocity: 0, kills: 0, earnings: 0, coins: 0, spent: 0, upgrades: {},
     allies: ROSTER.map(a => ({ id: a.id, x: a.x, y: a.y, hp: a.hp, maxHp: a.hp, status: 'active', reviveIn: 0, shield: 0, cooldown: .3, casts: 0 })),
-    enemies: [], effects: [], spawnIn: 1, paused: true, pauseReason: 'start', dangerAcknowledged: false, speed: 1,
+    enemies: [], effects: [], frontline: WORLD_ORIGIN_Y, cameraY: WORLD_ORIGIN_Y - CAMERA_FRONT_Y, generatedTo: WORLD_ORIGIN_Y - .5, retreatBias: 0, spawnIn: 1, paused: true, pauseReason: 'start', dangerAcknowledged: false, speed: 1,
     campSnapshot: null, stats: { kills: 0, damage: 0, recovery: 0, income: 0, collisions: 0, counter: 0, period: 0 },
     rates: { kills: 0, damage: 0, recovery: 0, income: 0 }, events: ['坑の入り口。前線の変化を見ながら進もう。'], comparison: null
   };
@@ -118,37 +124,83 @@ function acquire(s: GameState, a: AllyState, range: number): EnemyState | null {
   return target;
 }
 function movementTarget(s: GameState, a: AllyState): EnemyState | null {
-  let target: EnemyState | null = null;
-  let score = -Infinity;
-  for (const e of s.enemies) {
-    if (e.hp <= 0) continue;
-    const d = length(a, e);
-    if (d > .78) continue;
-    const priority = e.y * 2 - d;
-    if (priority > score) { target = e; score = priority; }
-  }
-  return target;
+  // Rearward intruders take precedence over the next group ahead.
+  return alive(s).filter(e => e.y > a.y - .04 || length(a, e) < 1.05)
+    .sort((e, f) => (f.y * 2 - length(a, f)) - (e.y * 2 - length(a, e)))[0] ?? null;
 }
-function moveAlly(s: GameState, a: AllyState, dt: number): void {
-  const person = ROSTER.find(r => r.id === a.id)!;
-  const target = movementTarget(s, a);
-  if (!target) return;
-  const dx = target.x - a.x;
-  const dy = target.y - a.y;
-  const d = Math.hypot(dx, dy);
-  if (d < .001) return;
-  // The active squad opens its spacing while someone is recovering, buying time
-  // without changing any individual movement rule or combat statistics.
-  const downedSpacing = s.allies.some(ally => ally.status === 'downed') ? DOWNED_RETREAT_DISTANCE : 0;
-  const injurySpacing = (1 - clamp(a.hp / a.maxHp, 0, 1)) * INJURY_RETREAT_DISTANCE;
-  const desiredRange = person.preferredRange + downedSpacing + injurySpacing;
-  const difference = d - desiredRange;
-  // A small dead band stops the formation from oscillating around its ideal range.
-  if (Math.abs(difference) <= .035) return;
-  const direction = difference > 0 ? 1 : -1;
-  const movement = Math.min(Math.abs(difference) - .035, person.moveSpeed * dt) * direction;
-  a.x = clamp(a.x + dx / d * movement, .08, .92);
-  a.y = clamp(a.y + dy / d * movement, .69, .94);
+function squadDanger(s: GameState, dt: number): void {
+  const squad = s.allies.filter(active);
+  const centerY = squad.reduce((sum, a) => sum + a.y, 0) / squad.length;
+  const close = alive(s).filter(e => squad.some(a => length(a, e) < .3));
+  const penetration = close.some(e => e.y > centerY - .04) ? .75 : 0;
+  const injury = squad.reduce((sum, a) => sum + 1 - a.hp / a.maxHp, 0) / squad.length;
+  const loss = Math.max(0, s.rates.damage - s.rates.recovery,
+    (s.stats.damage - s.stats.recovery) / Math.max(.5, s.stats.period));
+  const danger = clamp(Math.max(loss / 12, (close.length - 2) / 7, penetration,
+    s.allies.some(a => !active(a)) ? .72 : 0, injury * 1.2), 0, 1);
+  // Retreat starts promptly and fades slowly, so every unit shares one decision.
+  s.retreatBias += (danger - s.retreatBias) * (1 - Math.exp(-dt * (danger > s.retreatBias ? 4 : .6)));
+}
+function moveSquad(s: GameState, dt: number): void {
+  const squad = s.allies.filter(active);
+  const center = {
+    x: squad.reduce((sum, a) => sum + a.x, 0) / squad.length,
+    y: squad.reduce((sum, a) => sum + a.y, 0) / squad.length
+  };
+  // All steering uses the same pre-movement snapshot, avoiding roster-order bias.
+  const moves = squad.map(a => {
+    const person = ROSTER.find(r => r.id === a.id)!;
+    const target = movementTarget(s, a);
+    let vx = 0, vy = -person.moveSpeed * .75;
+    if (target) {
+      const dx = target.x - a.x, dy = target.y - a.y;
+      const d = Math.max(.001, Math.hypot(dx, dy));
+      const desired = person.preferredRange
+        + (s.allies.some(ally => !active(ally)) ? DOWNED_RETREAT_DISTANCE : 0)
+        + (1 - a.hp / a.maxHp) * INJURY_RETREAT_DISTANCE;
+      const amount = Math.abs(d - desired) < .035 ? 0 : clamp((d - desired) * 3, -person.moveSpeed, person.moveSpeed);
+      vx = dx / d * amount; vy = dy / d * amount;
+      // Re-form on the rearward side of an intruder instead of chasing ahead.
+      if (target.y > a.y - .04) {
+        vx = clamp(dx * 2, -person.moveSpeed, person.moveSpeed);
+        vy = person.moveSpeed;
+      }
+    }
+    const dx = center.x - a.x, dy = center.y - a.y;
+    const d = Math.hypot(dx, dy);
+    if (d > .24) {
+      const strength = Math.min(2, (d - .24) * 7);
+      vx += dx / d * person.moveSpeed * strength;
+      vy += dy / d * person.moveSpeed * strength;
+    }
+    // Danger changes movement intent, never distance or progress velocity.
+    vy = vy * (1 - s.retreatBias) + person.moveSpeed * s.retreatBias;
+    const speed = Math.hypot(vx, vy);
+    const scale = speed > person.moveSpeed ? person.moveSpeed / speed : 1;
+    return { a, vx: vx * scale, vy: vy * scale };
+  });
+  for (const { a, vx, vy } of moves) {
+    a.x = clamp(a.x + vx * dt, .08, .92);
+    a.y += vy * dt;
+  }
+}
+export function calculateFrontline(s: GameState): number {
+  const squad = s.allies.filter(active);
+  if (!squad.length) return s.frontline;
+  const foremostAlly = Math.min(...squad.map(a => a.y));
+  const enemies = alive(s);
+  // max in downward-positive y is min in forward-positive progress.
+  return enemies.length ? Math.max(foremostAlly, ...enemies.map(e => e.y)) : foremostAlly;
+}
+export function updateFrontline(s: GameState, dt: number): void {
+  const previous = s.frontline;
+  s.frontline = calculateFrontline(s);
+  s.distance = (WORLD_ORIGIN_Y - s.frontline) * METRES_PER_UNIT;
+  s.velocity = dt > 0 ? (previous - s.frontline) * METRES_PER_UNIT / dt : 0;
+  s.cameraY += (s.frontline - CAMERA_FRONT_Y - s.cameraY) * (1 - Math.exp(-dt * 2.5));
+}
+export function nearbyEnemyCount(s: GameState): number {
+  return alive(s).filter(e => s.allies.some(a => active(a) && length(a, e) < .5)).length;
 }
 function separateAllies(s: GameState, dt: number): void {
   const minimum = .068;
@@ -170,9 +222,9 @@ function separateAllies(s: GameState, dt: number): void {
         const nx = dx / d;
         const ny = dy / d;
         a.x = clamp(a.x - nx * push, .08, .92);
-        a.y = clamp(a.y - ny * push, .69, .94);
+        a.y -= ny * push;
         b.x = clamp(b.x + nx * push, .08, .92);
-        b.y = clamp(b.y + ny * push, .69, .94);
+        b.y += ny * push;
       }
     }
   }
@@ -220,13 +272,44 @@ function heal(s: GameState): void {
 function recoverActiveAllies(s: GameState, dt: number): void {
   for (const ally of s.allies) if (active(ally)) recoverHp(s, ally, PASSIVE_RECOVERY_PER_SECOND * dt);
 }
-function spawn(s: GameState): void {
-  const tier = Math.floor(s.distance / CAMP_INTERVAL);
+function spawn(s: GameState, y: number): void {
+  const depth = Math.max(0, (WORLD_ORIGIN_Y - y) * METRES_PER_UNIT);
+  const tier = Math.floor(depth / CAMP_INTERVAL);
   const r = random(s);
   const kind = ENEMY_KINDS[r < .17 + tier * .02 ? 1 : r < .28 + tier * .04 ? 2 : r < .47 + tier * .03 ? 3 : 0];
-  const factor = 1 + s.distance / 650;
-  s.enemies.push({ ...kind, id: s.nextId++, kind: kind.id, x: .1 + random(s) * .8, y: .055, hp: kind.hp * factor, maxHp: kind.hp * factor,
-    damage: kind.damage * (1 + s.distance / 1300), vy: 0, attackCd: 1 + random(s), flash: 0, impactCd: 0 });
+  const factor = 1 + depth / 650;
+  s.enemies.push({ ...kind, id: s.nextId++, kind: kind.id, x: .1 + random(s) * .8, y,
+    hp: kind.hp * factor, maxHp: kind.hp * factor,
+    damage: kind.damage * (1 + depth / 1300), vy: 0, attackCd: 1 + random(s), flash: 0, impactCd: 0, alerted: false });
+}
+export function generateAhead(s: GameState): void {
+  // Persistent spatial frontier: moving back or waiting never regenerates a region.
+  const ahead = Math.min(s.frontline, s.cameraY) - 1.1;
+  while (s.generatedTo > ahead) {
+    const count = 2 + Math.min(3, Math.floor(Math.max(0, s.best) / 300));
+    for (let i = 0; i < count; i++) spawn(s, s.generatedTo - random(s) * .12);
+    s.generatedTo -= REGION_LENGTH;
+  }
+}
+function moveEnemy(s: GameState, e: EnemyState, dt: number): void {
+  if (e.hp <= 0) return;
+  const target = s.allies.filter(active).sort((a, b) => length(e, a) - length(e, b))[0];
+  if (!target) return;
+  const d = length(e, target);
+  if (d < ENEMY_NOTICE_RANGE) e.alerted = true;
+  if (e.alerted) {
+    const move = Math.min(Math.max(0, d - ENEMY_ATTACK_RANGE * .85), e.speed * dt);
+    if (d > .001) {
+      e.x = clamp(e.x + (target.x - e.x) / d * move, .05, .95);
+      e.y += (target.y - e.y) / d * move;
+    }
+  }
+  e.y += e.vy * dt;
+  e.vy *= Math.exp(-dt * 5.5);
+  e.flash = Math.max(0, e.flash - dt);
+  e.impactCd = Math.max(0, e.impactCd - dt);
+  e.attackCd -= dt;
+  if (e.attackCd <= 0) e.attackCd = enemyAttack(s, e) ? 1.55 : .12;
 }
 function contacts(s: GameState): void {
   for (let i = 0; i < s.enemies.length; i++) {
@@ -241,7 +324,7 @@ function contacts(s: GameState): void {
       const nx = dx / d, ny = dy / d;
       const separation = overlap * .5;
       a.x = clamp(a.x - nx * separation, .05, .95); b.x = clamp(b.x + nx * separation, .05, .95);
-      a.y = clamp(a.y - ny * separation, .045, .75); b.y = clamp(b.y + ny * separation, .045, .75);
+      a.y -= ny * separation; b.y += ny * separation;
       const impact = Math.abs(a.vy - b.vy);
       const shared = (a.vy * a.mass + b.vy * b.mass) / (a.mass + b.mass);
       a.vy = shared * .6; b.vy = shared * .6;
@@ -299,7 +382,7 @@ function updateRecovery(s: GameState, dt: number): void {
     const squadCenterY = activeSquad.length
       ? activeSquad.reduce((sum, ally) => sum + ally.y, 0) / activeSquad.length
       : person.y;
-    const entryY = clamp(Math.max(squadCenterY + .055, person.y + .055), .69, .97);
+    const entryY = squadCenterY + .2;
     resetAlly(a, false, { x: person.x, y: entryY });
     s.stats.recovery += a.hp;
     log(s, `${person.name}が戦線に復帰。`);
@@ -327,27 +410,12 @@ export function step(s: GameState, dt = STEP): void {
   s.time += dt;
   updateRecovery(s, dt);
   recoverActiveAllies(s, dt);
-  s.spawnIn -= dt;
-  if (s.spawnIn <= 0 && s.enemies.length < 42) {
-    spawn(s);
-    const frequency = .9 + Math.min(1.35, s.distance / 240);
-    s.spawnIn += (1 / frequency) * (.85 + random(s) * .3);
-  }
-  for (const e of s.enemies) {
-    e.y = Math.min(.72, e.y + (e.speed + e.vy) * dt);
-    e.vy *= Math.exp(-dt * 5.5);
-    e.flash = Math.max(0, (e.flash || 0) - dt);
-    e.impactCd = Math.max(0, (e.impactCd || 0) - dt);
-    if (e.y > .66 && e.hp > 0) {
-      e.attackCd -= dt;
-      if (e.attackCd <= 0) {
-        if (enemyAttack(s, e)) e.attackCd += 1.55;
-        else e.attackCd = .12;
-      }
-    }
-  }
+  generateAhead(s);
+  for (const e of s.enemies) moveEnemy(s, e, dt);
   contacts(s);
-  for (const a of s.allies) if (active(a)) moveAlly(s, a, dt);
+  if (allDowned(s)) { enterCollapse(s); return; }
+  squadDanger(s, dt);
+  moveSquad(s, dt);
   separateAllies(s, dt);
   for (const a of s.allies) {
     if (!active(a)) continue;
@@ -363,22 +431,19 @@ export function step(s: GameState, dt = STEP): void {
   s.enemies = alive(s);
   s.effects = s.effects.filter(fx => (fx.life -= dt) > 0);
   updateRates(s, dt);
-  // HP balance alone moves the front. Defeated enemies affect it indirectly by
-  // reducing future attacks; no incoming damage means the squad keeps advancing.
-  const netDamage = s.rates.damage - s.rates.recovery;
-  let target = 2.8 - .53 * netDamage;
-  target = clamp(target, -3.8, 6.5);
-  s.velocity += (target - s.velocity) * Math.min(1, dt * 1.15);
-  s.distance = Math.max(s.camp, s.distance + s.velocity * dt);
+  updateFrontline(s, dt);
   s.best = Math.max(s.best, s.distance);
   s.peakSinceCamp = Math.max(s.peakSinceCamp, s.distance);
   const nextCamp = (Math.floor(s.camp / CAMP_INTERVAL) + 1) * CAMP_INTERVAL;
   if (s.distance >= nextCamp) {
-    s.distance = nextCamp; s.camp = nextCamp; s.peakSinceCamp = nextCamp;
+    s.camp = nextCamp; s.peakSinceCamp = s.distance;
     s.velocity = 0; s.paused = true; s.pauseReason = 'camp';
     s.dangerAcknowledged = false;
-    s.enemies = []; s.effects = []; s.spawnIn = .8;
-    for (const a of s.allies) resetAlly(a);
+    // A checkpoint heals the squad in place. Existing world enemies persist.
+    s.effects = [];
+    for (const a of s.allies) { a.hp = a.maxHp; a.status = 'active'; a.reviveIn = 0; }
+    s.retreatBias = 0;
+    updateFrontline(s, 0);
     s.campSnapshot = snapshot(s);
     log(s, `${nextCamp}mの中継拠点に到達。遠征資金を組み直せる。`);
   } else {
@@ -404,7 +469,14 @@ export function retreat(s: GameState): boolean {
   s.enemies = []; s.effects = []; s.spawnIn = .8; s.velocity = 0; s.rates = { kills: 0, damage: 0, recovery: 0, income: 0 };
   s.stats = { kills: 0, damage: 0, recovery: 0, income: 0, collisions: 0, counter: 0, period: 0 };
   s.dangerAcknowledged = false;
-  for (const a of s.allies) resetAlly(a);
+  for (const a of s.allies) {
+    const person = ROSTER.find(r => r.id === a.id)!;
+    resetAlly(a, true, { x: person.x, y: person.y - s.camp / METRES_PER_UNIT });
+  }
+  s.frontline = WORLD_ORIGIN_Y - s.camp / METRES_PER_UNIT;
+  s.cameraY = s.frontline - CAMERA_FRONT_Y;
+  s.generatedTo = s.frontline - .5;
+  s.retreatBias = 0;
   s.paused = true; s.pauseReason = 'camp'; s.comparison = null;
   log(s, `${saved.camp}mの拠点へ撤退。途中の資金と購入は戻った。`);
   return true;
@@ -423,7 +495,7 @@ export function resume(s: GameState): boolean {
 export function pause(s: GameState): void { if (!s.paused) { s.paused = true; s.pauseReason = 'manual'; } }
 export function describe(s: GameState): string {
   if (s.paused && s.pauseReason === 'collapse') return '戦線崩壊。調査隊は最後の拠点へ撤退する必要があります。';
-  const crowd = s.enemies.filter(e => e.y > .47).length;
+  const crowd = nearbyEnemyCount(s);
   if (s.paused && s.pauseReason === 'camp') return '中継拠点。購入分を含む全資金を組み直せます。';
   if (s.paused && s.pauseReason === 'danger') return '前線が危険域です。強化して続行するか撤退できます。';
   if (!s.paused && s.allies.some(a => a.status === 'downed')) return '仲間の復帰まで、隊列を広げて攻撃圏から後退中。';

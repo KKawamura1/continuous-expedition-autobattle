@@ -1,5 +1,5 @@
 import { ENEMY_KINDS, ROSTER, UPGRADES } from './content.ts';
-import { RECOVERY_SECONDS } from './simulation.ts';
+import { RECOVERY_SECONDS, WORLD_ORIGIN_Y, METRES_PER_UNIT, CAMERA_FRONT_Y } from './simulation.ts';
 import type {
   AllyId, AllyState, CampSnapshot, EnemyState, GameState, PauseReason, PersistentGameState, Rates,
   Stats, UpgradeId, UpgradeLevels
@@ -92,7 +92,7 @@ function parseEnemy(raw: unknown): EnemyState | null {
     speed: raw.speed as number, damage: raw.damage as number, mass: raw.mass as number,
     pressure: raw.pressure as number, bounty: raw.bounty as number, radius: raw.radius as number,
     color: kind.color, vy: raw.vy as number, attackCd: raw.attackCd as number,
-    flash: isFiniteNumber(raw.flash) ? raw.flash : 0, impactCd: isFiniteNumber(raw.impactCd) ? raw.impactCd : 0
+    flash: isFiniteNumber(raw.flash) ? raw.flash : 0, impactCd: isFiniteNumber(raw.impactCd) ? raw.impactCd : 0, alerted: typeof raw.alerted === 'boolean' ? raw.alerted : true
   };
 }
 function parseRates(raw: unknown): Rates | null {
@@ -109,8 +109,8 @@ function parseStats(raw: unknown): Stats | null {
 }
 
 export function validateSave(raw: unknown): GameState | null {
-  if (!isRecord(raw) || (raw.version !== 1 && raw.version !== 2 && raw.version !== 3)) return null;
-  const legacySave = raw.version !== 3;
+  if (!isRecord(raw) || (raw.version !== 1 && raw.version !== 2 && raw.version !== 3 && raw.version !== 4)) return null;
+  const legacySave = raw.version < 3;
   const numbers = ['seed', 'nextId', 'time', 'distance', 'best', 'camp', 'velocity', 'kills', 'earnings', 'coins', 'spent', 'spawnIn'];
   if (!numbers.every(field => isFiniteNumber(raw[field]))) return null;
   const migratedPeak = Math.max(raw.camp as number, raw.distance as number,
@@ -134,14 +134,36 @@ export function validateSave(raw: unknown): GameState | null {
   if (!Array.isArray(raw.events) || raw.events.some(event => typeof event !== 'string')) return null;
   const collapsed = (allies as AllyState[]).every(ally => ally.status === 'downed');
   if (!collapsed && raw.pauseReason === 'collapse') return null;
+  let frontline = raw.frontline as number;
+  let cameraY = raw.cameraY as number;
+  let generatedTo = raw.generatedTo as number;
+  let retreatBias = raw.retreatBias as number;
+  if (raw.version === 4) {
+    if (![frontline, cameraY, generatedTo, retreatBias].every(isFiniteNumber) || retreatBias < 0 || retreatBias > 1) return null;
+    if (Math.abs((WORLD_ORIGIN_Y - frontline) * METRES_PER_UNIT - (raw.distance as number)) > .001) return null;
+  } else {
+    // Translate the entire old screen-space battle, preserving both relative
+    // distances and saved expedition progress. New territory begins beyond it.
+    const squad = (allies as AllyState[]).filter(a => a.status === 'active');
+    const front = squad.length ? Math.min(...squad.map(a => a.y)) : WORLD_ORIGIN_Y;
+    const oldFront = Math.max(front, ...(enemies as EnemyState[]).filter(e => e.hp > 0).map(e => e.y));
+    frontline = WORLD_ORIGIN_Y - (raw.distance as number) / METRES_PER_UNIT;
+    const shift = frontline - oldFront;
+    for (const a of allies as AllyState[]) a.y += shift;
+    for (const e of enemies as EnemyState[]) e.y += shift;
+    cameraY = frontline - CAMERA_FRONT_Y;
+    generatedTo = Math.min(frontline - .5, ...(enemies as EnemyState[]).map(e => e.y)) - .36;
+    retreatBias = 0;
+  }
   // Effects and comparisons are transient; loading always returns a paused expedition.
   return {
-    version: 3, seed: (raw.seed as number) >>> 0, nextId: raw.nextId as number,
+    version: 4, seed: (raw.seed as number) >>> 0, nextId: raw.nextId as number,
     time: raw.time as number, distance: raw.distance as number, best: raw.best as number,
     peakSinceCamp,
     camp: raw.camp as number, velocity: raw.velocity as number, kills: raw.kills as number,
     earnings: raw.earnings as number, coins: raw.coins as number, spent: raw.spent as number,
     upgrades, allies: allies as AllyState[], enemies: enemies as EnemyState[], effects: [],
+    frontline, cameraY, generatedTo, retreatBias,
     spawnIn: raw.spawnIn as number, paused: true,
     pauseReason: collapsed ? 'collapse' : (raw.pauseReason as PauseReason) || 'manual', speed: raw.speed as 1 | 2 | 4,
     dangerAcknowledged: typeof raw.dangerAcknowledged === 'boolean' ? raw.dangerAcknowledged : raw.pauseReason === 'danger',
