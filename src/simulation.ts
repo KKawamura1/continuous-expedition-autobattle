@@ -9,7 +9,12 @@ export const METRES_PER_UNIT = 40;
 export const WORLD_ORIGIN_Y = .77;
 export const CAMERA_FRONT_Y = .4;
 export const REGION_LENGTH = .36;
-export const ENEMY_NOTICE_RANGE = .82;
+export const ENEMY_NOTICE_RANGE = .70;
+export const UNALERTED_ENEMY_SPEED_RATIO = .45;
+export const MAX_SQUAD_RETREAT_SPEED = .035;
+export const MAX_RANGE_RETREAT_SPEED = .035;
+export const RETREAT_RISE_RATE = 1.5;
+export const RETREAT_DECAY_RATE = .5;
 export const STEP = 1 / 30;
 export const CAMP_INTERVAL = 300;
 export const RECOVERY_SECONDS = 9.5;
@@ -130,16 +135,23 @@ function movementTarget(s: GameState, a: AllyState): EnemyState | null {
 }
 function squadDanger(s: GameState, dt: number): void {
   const squad = s.allies.filter(active);
+  if (!squad.length) return;
   const centerY = squad.reduce((sum, a) => sum + a.y, 0) / squad.length;
-  const close = alive(s).filter(e => squad.some(a => length(a, e) < .3));
-  const penetration = close.some(e => e.y > centerY - .04) ? .75 : 0;
+  const enemies = alive(s);
+  const close = enemies.filter(e => squad.some(a => length(a, e) < .3));
+  const penetration = enemies.some(e => e.y > centerY) ? .55 : 0;
   const injury = squad.reduce((sum, a) => sum + 1 - a.hp / a.maxHp, 0) / squad.length;
-  const loss = Math.max(0, s.rates.damage - s.rates.recovery,
+  const netDamage = Math.max(0, s.rates.damage - s.rates.recovery,
     (s.stats.damage - s.stats.recovery) / Math.max(.5, s.stats.period));
-  const danger = clamp(Math.max(loss / 12, (close.length - 2) / 7, penetration,
-    s.allies.some(a => !active(a)) ? .72 : 0, injury * 1.2), 0, 1);
-  // Retreat starts promptly and fades slowly, so every unit shares one decision.
-  s.retreatBias += (danger - s.retreatBias) * (1 - Math.exp(-dt * (danger > s.retreatBias ? 4 : .6)));
+  const lossDanger = clamp((netDamage - 2) / 4, 0, 1);
+  const crowdDanger = clamp((close.length - 6) / 10, 0, 1);
+  const downedCount = s.allies.filter(a => !active(a)).length;
+  const casualtyDanger = downedCount >= 2 ? .65 : downedCount === 1 ? .35 : 0;
+  const injuryDanger = clamp(injury * .25, 0, .25);
+  const danger = Math.max(lossDanger, crowdDanger, penetration, casualtyDanger, injuryDanger);
+  const responseRate = danger > s.retreatBias ? RETREAT_RISE_RATE : RETREAT_DECAY_RATE;
+  // A little pressure does not turn into flight immediately; sustained pressure builds over seconds.
+  s.retreatBias += (danger - s.retreatBias) * (1 - Math.exp(-dt * responseRate));
 }
 function moveSquad(s: GameState, dt: number): void {
   const squad = s.allies.filter(active);
@@ -155,16 +167,15 @@ function moveSquad(s: GameState, dt: number): void {
     if (target) {
       const dx = target.x - a.x, dy = target.y - a.y;
       const d = Math.max(.001, Math.hypot(dx, dy));
+      const isFrontliner = a.id === 'gou' || a.id === 'nagi';
       const desired = person.preferredRange
-        + (s.allies.some(ally => !active(ally)) ? DOWNED_RETREAT_DISTANCE : 0)
-        + (1 - a.hp / a.maxHp) * INJURY_RETREAT_DISTANCE;
-      const amount = Math.abs(d - desired) < .035 ? 0 : clamp((d - desired) * 3, -person.moveSpeed, person.moveSpeed);
+        + (!isFrontliner && s.allies.some(ally => !active(ally)) ? DOWNED_RETREAT_DISTANCE : 0)
+        + (!isFrontliner ? (1 - a.hp / a.maxHp) * INJURY_RETREAT_DISTANCE : 0);
+      let amount = Math.abs(d - desired) < .035 ? 0 : clamp((d - desired) * 3, -person.moveSpeed, person.moveSpeed);
+      if (isFrontliner) amount = Math.max(0, amount);
+      else if (a.id === 'hibana' && amount < 0) amount *= .5;
+      else if (amount < 0) amount = Math.max(amount, -MAX_RANGE_RETREAT_SPEED);
       vx = dx / d * amount; vy = dy / d * amount;
-      // Re-form on the rearward side of an intruder instead of chasing ahead.
-      if (target.y > a.y - .04) {
-        vx = clamp(dx * 2, -person.moveSpeed, person.moveSpeed);
-        vy = person.moveSpeed;
-      }
     }
     const dx = center.x - a.x, dy = center.y - a.y;
     const d = Math.hypot(dx, dy);
@@ -173,8 +184,10 @@ function moveSquad(s: GameState, dt: number): void {
       vx += dx / d * person.moveSpeed * strength;
       vy += dy / d * person.moveSpeed * strength;
     }
-    // Danger changes movement intent, never distance or progress velocity.
-    vy = vy * (1 - s.retreatBias) + person.moveSpeed * s.retreatBias;
+    // Retreat is a shared slow pressure, separate from each character's normal speed.
+    // It cancels forward travel before adding at most MAX_SQUAD_RETREAT_SPEED.
+    vy = Math.min(0, vy) * (1 - s.retreatBias) + Math.max(0, vy)
+      + MAX_SQUAD_RETREAT_SPEED * s.retreatBias;
     const speed = Math.hypot(vx, vy);
     const scale = speed > person.moveSpeed ? person.moveSpeed / speed : 1;
     return { a, vx: vx * scale, vy: vy * scale };
@@ -286,7 +299,8 @@ export function generateAhead(s: GameState): void {
   // Persistent spatial frontier: moving back or waiting never regenerates a region.
   const ahead = Math.min(s.frontline, s.cameraY) - 1.1;
   while (s.generatedTo > ahead) {
-    const count = 2 + Math.min(3, Math.floor(Math.max(0, s.best) / 300));
+    // Each region contributes an arriving group; its flow grows as the expedition advances.
+    const count = 8 + 30 * Math.min(3, Math.floor(Math.max(0, s.best) / CAMP_INTERVAL));
     for (let i = 0; i < count; i++) spawn(s, s.generatedTo - random(s) * .12);
     s.generatedTo -= REGION_LENGTH;
   }
@@ -303,7 +317,7 @@ function moveEnemy(s: GameState, e: EnemyState, dt: number): void {
       e.x = clamp(e.x + (target.x - e.x) / d * move, .05, .95);
       e.y += (target.y - e.y) / d * move;
     }
-  }
+  } else e.y += e.speed * UNALERTED_ENEMY_SPEED_RATIO * dt;
   e.y += e.vy * dt;
   e.vy *= Math.exp(-dt * 5.5);
   e.flash = Math.max(0, e.flash - dt);

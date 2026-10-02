@@ -1,11 +1,20 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { buy, createGame, pause, refundAtCamp, resume, retreat, step, CAMP_INTERVAL, DOWNED_RETREAT_DISTANCE, ENEMY_ATTACK_RANGE, INJURY_RETREAT_DISTANCE, NAGI_GUARD_RADIUS, PASSIVE_RECOVERY_PER_SECOND, RECOVERY_SECONDS, REVIVE_HP_RATIO, STEP, calculateFrontline, updateFrontline, generateAhead, WORLD_ORIGIN_Y, METRES_PER_UNIT, CAMERA_FRONT_Y } from '../src/simulation.ts';
+import { buy, createGame, pause, refundAtCamp, resume, retreat, step, CAMP_INTERVAL, DOWNED_RETREAT_DISTANCE, ENEMY_ATTACK_RANGE, ENEMY_NOTICE_RANGE, INJURY_RETREAT_DISTANCE, MAX_RANGE_RETREAT_SPEED, MAX_SQUAD_RETREAT_SPEED, NAGI_GUARD_RADIUS, PASSIVE_RECOVERY_PER_SECOND, RECOVERY_SECONDS, RETREAT_DECAY_RATE, RETREAT_RISE_RATE, REVIVE_HP_RATIO, STEP, UNALERTED_ENEMY_SPEED_RATIO, calculateFrontline, updateFrontline, generateAhead, WORLD_ORIGIN_Y, METRES_PER_UNIT, CAMERA_FRONT_Y } from '../src/simulation.ts';
 import { decodeSave, encodeSave, validateSave } from '../src/save.ts';
 import type { AllyState, EnemyState, GameState } from '../src/types.ts';
 
 function run(s: GameState, seconds: number): void {
   for (let i = 0; i < Math.round(seconds / STEP) && !s.paused; i++) step(s, STEP);
+}
+
+function runUntilCamp(s: GameState, seconds: number): void {
+  for (let i = 0; i < Math.round(seconds / STEP); i++) {
+    if (s.pauseReason === 'danger') resume(s);
+    if (s.paused) return;
+    step(s, STEP);
+    if (s.pauseReason === 'camp' || s.pauseReason === 'collapse') return;
+  }
 }
 
 function setProgress(s: GameState, distance: number): void {
@@ -30,9 +39,9 @@ function down(ally: AllyState, reviveIn = RECOVERY_SECONDS): void {
   ally.shield = 0;
 }
 
-test('the autonomous squad reaches a camp, while an observed crowd can still be answered with cleave', () => {
+test('the squad reaches its first camp and upgrades help handle the denser next region', () => {
   const baseline = createGame(194);
-  resume(baseline); run(baseline, 140);
+  resume(baseline); runUntilCamp(baseline, 300);
   assert.equal(baseline.pauseReason, 'camp');
   assert.ok(baseline.distance >= CAMP_INTERVAL && baseline.distance < CAMP_INTERVAL + 1);
 
@@ -42,7 +51,7 @@ test('the autonomous squad reaches a camp, while an observed crowd can still be 
   pause(modified);
   assert.equal(buy(modified, 'cleave'), true);
   assert.ok(modified.coins < before);
-  resume(modified); run(modified, 100);
+  resume(modified); runUntilCamp(modified, 300);
   assert.equal(modified.pauseReason, 'camp');
   assert.ok(modified.distance >= CAMP_INTERVAL && modified.distance < CAMP_INTERVAL + 1);
 
@@ -50,7 +59,7 @@ test('the autonomous squad reaches a camp, while an observed crowd can still be 
   resume(defensive); run(defensive, 45); pause(defensive);
   assert.equal(buy(defensive, 'counter'), true);
   assert.equal(buy(defensive, 'barrier'), true);
-  resume(defensive); run(defensive, 100);
+  resume(defensive); runUntilCamp(defensive, 300);
   assert.equal(defensive.pauseReason, 'camp');
   assert.equal(defensive.upgrades.counter, 1);
 });
@@ -200,7 +209,7 @@ test('allies move toward targets while close range preferences hold formation', 
     'an ally at its preferred range should not oscillate in and out');
 });
 
-test('a downed teammate makes survivors hold a wider distance and retreat from nearby enemies', () => {
+test('frontliners keep their ground near an enemy while a downed teammate slowly raises squad retreat pressure', () => {
   const steady = createGame();
   const recovering = createGame();
   const wounded = createGame();
@@ -224,11 +233,11 @@ test('a downed teammate makes survivors hold a wider distance and retreat from n
 
   const steadyGou = steady.allies.find(ally => ally.id === 'gou')!;
   const retreatingGou = recovering.allies.find(ally => ally.id === 'gou')!;
-  assert.ok(steadyGou.y < .72, 'without a casualty, Gou closes to his usual preferred range');
-  assert.ok(retreatingGou.y > .72, 'while Nagi recovers, Gou backs away to buy time');
-  assert.ok(woundedGou.y > .72, 'a low-health ally holds a safer range after returning');
-  assert.ok(Math.hypot(retreatingGou.x - .05, retreatingGou.y - .53)
-    > Math.hypot(steadyGou.x - .05, steadyGou.y - .53));
+  assert.ok(steadyGou.y < .72, 'Gou closes to his usual preferred range');
+  assert.ok(retreatingGou.y < .72, 'a nearby enemy does not make Gou flee, even while Nagi recovers');
+  assert.ok(woundedGou.y < .72, 'low health alone does not make a frontliner kite away');
+  assert.ok(recovering.retreatBias > steady.retreatBias, 'a casualty gradually raises team-level pressure');
+  assert.ok(retreatingGou.y > steadyGou.y, 'team-level pressure slightly checks Gou’s forward movement');
   assert.equal(DOWNED_RETREAT_DISTANCE, .08);
   assert.equal(INJURY_RETREAT_DISTANCE, .18);
 });
@@ -570,30 +579,144 @@ test('an untouched region waits offscreen, waiting adds no enemies and retreat r
   assert.deepEqual(s.enemies.slice(0, original.length).map(e => ({ id: e.id, hp: e.hp, y: e.y })), original);
 });
 
-test('collective pressure retreats every active ally and cohesion bounds a long unopposed march', () => {
+test('maximum collective retreat is independent of normal movement speed', () => {
   const s = createGame(); s.generatedTo = -1e6;
-  s.rates.damage = 24;
+  s.rates.damage = 6;
+  for (const [i, ally] of s.allies.entries()) { ally.x = .3 + i * .1; ally.y = .7; }
   s.retreatBias = 1;
   const positions = s.allies.map(a => a.y);
-  resume(s); run(s, .5);
-  assert.ok(s.allies.every((a, i) => a.y > positions[i]));
-  assert.ok(s.velocity < 0);
+  resume(s); step(s);
+  for (const [i, ally] of s.allies.entries()) {
+    const backwardSpeed = (ally.y - positions[i]) / STEP;
+    assert.ok(backwardSpeed > 0 && backwardSpeed <= MAX_SQUAD_RETREAT_SPEED + .001,
+      'the shared retreat push stays near its dedicated speed cap');
+  }
+  assert.equal(MAX_SQUAD_RETREAT_SPEED, .035);
+  assert.equal(RETREAT_RISE_RATE, 1.5);
+  assert.equal(RETREAT_DECAY_RATE, .5);
+
   const marching = createGame(); marching.generatedTo = -1e6;
   resume(marching); run(marching, 40);
   const spread = Math.max(...marching.allies.map(a => a.y)) - Math.min(...marching.allies.map(a => a.y));
   assert.ok(spread < .6, 'the fastest ally cannot leave the backline far behind');
 });
 
-test('a rearward intruder is intercepted rather than left behind while marching forward', () => {
+test('a pressured frontliner retreats slower than a heavy and faster enemies close the gap', () => {
+  const separationAfter = (enemySpeed: number): number => {
+    const s = createGame(); s.generatedTo = -1e6;
+    const gou = s.allies.find(a => a.id === 'gou')!;
+    gou.x = .5; gou.y = .7; gou.cooldown = 100;
+    for (const ally of s.allies) if (ally !== gou) down(ally, 100);
+    s.enemies = [{ ...staticEnemy(.5, -.1), speed: enemySpeed, alerted: true }];
+    s.rates.damage = 6;
+    s.retreatBias = 1;
+    resume(s); run(s, .5);
+    return Math.hypot(gou.x - s.enemies[0].x, gou.y - s.enemies[0].y);
+  };
+  const initialGap = .8;
+  assert.ok(separationAfter(.031) > initialGap, 'heavy falls slightly farther behind the retreat');
+  const strayGap = separationAfter(.048);
+  const swarmGap = separationAfter(.056);
+  const runnerGap = separationAfter(.081);
+  assert.ok(strayGap < initialGap && swarmGap < strayGap && runnerGap < swarmGap,
+    'stray, swarm, and runner catch the squad at progressively higher speeds');
+});
+
+test('an enemy behind the squad raises persistent retreat pressure and remains on the frontline', () => {
   const s = createGame(); s.generatedTo = -1e6;
   const intruder = staticEnemy(.5, 1.0);
   const ahead = { ...staticEnemy(.5, .2), id: 2 };
   s.enemies = [intruder, ahead];
   for (const a of s.allies) a.cooldown = 100;
-  const before = s.allies.map(a => a.y);
-  resume(s); run(s, 1);
-  assert.ok(s.allies.every((a, i) => a.y > before[i]));
+  resume(s); run(s, 3);
+  assert.ok(s.retreatBias > .5, 'an enemy behind the squad gradually raises the penetration response');
   assert.equal(s.frontline, intruder.y);
+});
+
+test('frontliners hold too-close enemies, ranged allies keep range and Hibana retreats at half strength', () => {
+  const centerMember = (s: GameState, id: AllyState['id']): AllyState => {
+    const target = s.allies.find(a => a.id === id)!;
+    const otherX = [.32, .41, .59, .68];
+    let otherIndex = 0;
+    s.allies.forEach(ally => {
+      ally.x = ally === target ? .5 : otherX[otherIndex++];
+      ally.y = .7;
+      ally.cooldown = 100;
+    });
+    return target;
+  };
+  const stationaryFrontliner = (id: 'gou' | 'nagi') => {
+    const s = createGame(); s.generatedTo = -1e6;
+    const ally = centerMember(s, id);
+    s.enemies = [staticEnemy(.5, .65)];
+    const before = ally.y;
+    resume(s); step(s);
+    return ally.y - before;
+  };
+  assert.ok(stationaryFrontliner('gou') < .0001, 'Gou does not backpedal inside preferred range');
+  assert.ok(stationaryFrontliner('nagi') < .0001, 'Nagi does not backpedal inside preferred range');
+
+  const rangedRetreatSpeed = (id: 'tsugumi' | 'genzou') => {
+    const s = createGame(); s.generatedTo = -1e6;
+    const ally = centerMember(s, id);
+    s.enemies = [staticEnemy(.5, .65)];
+    const before = ally.y;
+    resume(s); step(s);
+    return (ally.y - before) / STEP;
+  };
+  for (const id of ['tsugumi', 'genzou'] as const) {
+    const retreatSpeed = rangedRetreatSpeed(id);
+    assert.ok(retreatSpeed > 0, `${id} backs away to restore preferred range`);
+    assert.ok(retreatSpeed <= MAX_RANGE_RETREAT_SPEED + .001, `${id} cannot kite at normal movement speed`);
+  }
+
+  const hibana = createGame(); hibana.generatedTo = -1e6;
+  const fast = centerMember(hibana, 'hibana');
+  hibana.enemies = [staticEnemy(.5, .55)];
+  const before = fast.y;
+  resume(hibana); step(hibana);
+  const retreatSpeed = (fast.y - before) / STEP;
+  assert.ok(retreatSpeed > .08 && retreatSpeed < .10,
+    'Hibana retreats at about half of the former .18 units/second response');
+});
+
+test('enemy inflow retains unalerted approach speed and alerted pursuit at the notice threshold', () => {
+  const s = createGame(); s.generatedTo = -1e6;
+  const enemy = { ...staticEnemy(.5, -.5), speed: .048, alerted: false };
+  s.enemies = [enemy];
+  const before = enemy.y;
+  resume(s); run(s, .5);
+  assert.ok(enemy.y > before, 'unalerted enemies advance toward the squad through the world');
+  assert.ok(Math.abs((enemy.y - before) / .5 - enemy.speed * UNALERTED_ENEMY_SPEED_RATIO) < .002);
+  assert.equal(ENEMY_NOTICE_RANGE, .70);
+  assert.equal(enemy.alerted, false, 'an enemy beyond notice range remains unalerted while advancing');
+
+  const noticed = createGame(); noticed.generatedTo = -1e6;
+  const pursuing = { ...staticEnemy(.5, .1), speed: .048, alerted: false };
+  noticed.enemies = [pursuing];
+  resume(noticed); run(noticed, 3);
+  assert.equal(pursuing.alerted, true, 'the enemy switches to sticky two-dimensional pursuit inside notice range');
+});
+
+test('spatial enemy supply grows by checkpoint tier without changing enemy stats', () => {
+  const supplyAt = (best: number): GameState => {
+    const s = createGame();
+    s.best = best;
+    generateAhead(s);
+    return s;
+  };
+  const opening = supplyAt(0);
+  const at300 = supplyAt(300);
+  const at600 = supplyAt(600);
+  assert.equal(opening.enemies.length, 24, 'three pre-generated regions contain eight enemies each at launch');
+  assert.equal(at300.enemies.length, 114, 'three regions contain 38 enemies after the first 300m tier');
+  assert.equal(at600.enemies.length, 204, 'three regions contain 68 enemies after the second 300m tier');
+  for (const state of [at300, at600]) {
+    assert.equal(state.enemies[0].kind, opening.enemies[0].kind);
+    assert.equal(state.enemies[0].maxHp, opening.enemies[0].maxHp);
+    assert.equal(state.enemies[0].damage, opening.enemies[0].damage,
+      'inflow changes do not directly alter per-enemy HP or damage');
+  }
 });
 
 test('local protection and counterattack still work at arbitrary world depth', () => {
@@ -642,7 +765,7 @@ test('a whole squad knocked out in one frame collapses with a loadable finite wo
 });
 
 
-test('a continuous expedition measures world movement and re-encounters the same retreating enemy groups', () => {
+test('an unupgraded expedition measures spatial movement, retreats and re-encounters persistent enemies', () => {
   const s = createGame(194); resume(s);
   const seen = new Map<number, { close: boolean; separated: boolean }>();
   let advances = 0, retreats = 0, recontacts = 0;
@@ -661,11 +784,13 @@ test('a continuous expedition measures world movement and re-encounters the same
       if (d < .25) prior.close = true;
       seen.set(e.id, prior);
     }
-    if (s.paused) { assert.equal(s.pauseReason, 'camp'); resume(s); }
+    if (s.paused && (s.pauseReason === 'camp' || s.pauseReason === 'danger')) resume(s);
+    else if (s.paused) break;
   }
   assert.ok(advances > 100 && retreats > 100);
   assert.ok(recontacts > 0, 'previously contacted enemies survive separation and meet the squad again');
-  assert.ok(s.distance > 1000);
+  assert.ok(s.best >= CAMP_INTERVAL && s.best < CAMP_INTERVAL * 2,
+    'the unupgraded seed reaches the first camp, then stalls in the next pressure band');
   const restored = decodeSave(encodeSave(s))!;
   assert.ok(restored);
   assert.deepEqual(restored.enemies, s.enemies);
