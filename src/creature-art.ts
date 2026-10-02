@@ -101,12 +101,12 @@ const face = (() => {
 function hornArt(mutations: MutationId[]): string {
   return hornShapes(mutations).map(shape => {
     const path = `M${shape.map(p => `${p.x} ${p.y}`).join('L')}Z`;
-    const [tip, inner, root] = shape;
+    const [tip, inner] = shape, root = shape[3] ?? shape[2];
     const ribs = [ .2, .4, .6, .8 ].map(t => {
       const x = tip.x + (inner.x - tip.x) * t, y = tip.y + (inner.y - tip.y) * t;
       return `<path d="M${x} ${y}q${Math.sign(x) * 10} 8 ${Math.sign(x) * 16} 17" stroke="#827d63" stroke-width="1.4" fill="none" opacity=".55"/>`;
     }).join('');
-    return `<path d="${path}" transform="translate(3 5)" fill="#102e3a" opacity=".6"/>
+    return `<ellipse cx="${Math.sign(tip.x) * 133}" cy="76" rx="30" ry="17" fill="url(#plate)" stroke="#203b43" stroke-width="2"/><path d="${path}" transform="translate(3 5)" fill="#102e3a" opacity=".6"/>
       <path d="${path}" fill="url(#bone)" stroke="#30454a" stroke-width="2.2" stroke-linejoin="round"/>
       <path d="M${tip.x} ${tip.y}L${inner.x} ${inner.y}L${root.x} ${root.y}" fill="none" stroke="#fff2d2" stroke-width="2.5" stroke-linejoin="round" opacity=".65"/>${ribs}`;
   }).join('');

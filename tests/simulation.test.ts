@@ -20,7 +20,7 @@ test('enemies keep approaching a retreating creature',()=>{
 });
 test('heavy contact makes actual progress retreat and sustained pressure can stop the expedition',()=>{
   const s=running();s.distance=100;s.bite=10;s.sweep=10;for(let i=0;i<16;i++)spawnEnemy(s,'boar',-170+i*22,100);advance(s,3);assert(s.distance<100);assert(s.health<MAX_HEALTH);assert(s.speed<0);
-  s.health=.01;step(s,.05);assert.equal(s.mode,'fallen');assert.equal(s.speed,0);
+  s.health=.01;spawnEnemy(s,'boar',0,s.distance);step(s,.05);assert.equal(s.mode,'fallen');assert.equal(s.speed,0);
 });
 test('horns exert no attraction before contact, then slide bodies inward along both diagonal faces',()=>{
   for(const side of [-1,1]) {

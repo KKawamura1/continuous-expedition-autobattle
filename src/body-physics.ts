@@ -21,7 +21,8 @@ export function hornShapes(m: MutationId[]): Point[][] {
   const outer = ram ? 188 : heavy ? 183 : 178;
   const inner = heavy || curl ? 45 : 90;
   const right: Point[][] = [[{ x: outer, y: -reach }, { x: inner, y: -13 },
-    { x: 109, y: 76 }, { x: heavy ? 180 : 169, y: 76 }]];
+    { x: 104, y: 58 }, { x: 116, y: 78 }, { x: 139, y: 84 }, { x: 161, y: 67 },
+    { x: heavy ? 141 : 126, y: 12 }, { x: outer - 14, y: -reach * .55 }]];
   if (curl) right.push([{ x: inner, y: -13 }, { x: 38, y: 24 }, { x: 66, y: 12 }, { x: 83, y: -3 }]);
   if (has(m, 'branch')) {
     right.push([{ x: 139, y: 22 }, { x: 190, y: -72 }, { x: 183, y: 26 }, { x: 151, y: 53 }]);
