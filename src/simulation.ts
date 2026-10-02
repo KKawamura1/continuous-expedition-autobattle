@@ -8,7 +8,12 @@ import type {
 export const METRES_PER_UNIT = 40;
 export const WORLD_ORIGIN_Y = .77;
 export const CAMERA_FRONT_Y = .4;
-export const REGION_LENGTH = .36;
+export const ENEMY_DENSITY_AT_START = .20;
+export const ENEMY_DENSITY_PER_METRE = .000067;
+export const MAX_ENEMY_DENSITY = .28;
+export const INITIAL_VISIBLE_FIELD_METRES = CAMERA_FRONT_Y * METRES_PER_UNIT;
+export const SPAWN_LEAD_UNITS = .2;
+export const ENEMY_KIND_SHARES = { stray: .5, runner: .2, heavy: .1, swarm: .2 } as const;
 export const ENEMY_NOTICE_RANGE = .70;
 export const UNALERTED_ENEMY_SPEED_RATIO = .45;
 export const MAX_SQUAD_RETREAT_SPEED = .035;
@@ -28,6 +33,13 @@ type Point = Pick<AllyState, 'x' | 'y'>;
 const clamp = (value: number, min: number, max: number): number => Math.max(min, Math.min(max, value));
 const round = (value: number): number => Math.round(value * 10) / 10;
 const random = (s: GameState): number => { s.seed = (Math.imul(1664525, s.seed) + 1013904223) >>> 0; return s.seed / 4294967296; };
+const exponentialGap = (s: GameState): number => -Math.log(Math.max(Number.EPSILON, 1 - random(s)));
+function mixSeed(seed: number): number {
+  let value = seed >>> 0;
+  value ^= value >>> 16; value = Math.imul(value, 0x7feb352d);
+  value ^= value >>> 15; value = Math.imul(value, 0x846ca68b);
+  return (value ^ (value >>> 16)) >>> 0;
+}
 const level = (s: GameState, id: UpgradeId): number => s.upgrades[id] || 0;
 const alive = (s: GameState): EnemyState[] => s.enemies.filter(e => e.hp > 0);
 const length = (a: Point, b: Point): number => Math.hypot(a.x - b.x, a.y - b.y);
@@ -54,14 +66,19 @@ export function price(s: GameState, id: string): number {
 }
 
 export function createGame(seed = 194): GameState {
-  return {
-    version: 4, seed: seed >>> 0, nextId: 1, time: 0, distance: 0, best: 0, peakSinceCamp: 0, camp: 0,
+  const s: GameState = {
+    version: 5, seed: mixSeed(seed), nextId: 1, time: 0, distance: 0, best: 0, peakSinceCamp: 0, camp: 0,
     velocity: 0, kills: 0, earnings: 0, coins: 0, spent: 0, upgrades: {},
     allies: ROSTER.map(a => ({ id: a.id, x: a.x, y: a.y, hp: a.hp, maxHp: a.hp, status: 'active', reviveIn: 0, shield: 0, cooldown: .3, casts: 0 })),
-    enemies: [], effects: [], frontline: WORLD_ORIGIN_Y, cameraY: WORLD_ORIGIN_Y - CAMERA_FRONT_Y, generatedTo: WORLD_ORIGIN_Y - .5, retreatBias: 0, spawnIn: 1, paused: true, pauseReason: 'start', dangerAcknowledged: false, speed: 1,
+    enemies: [], effects: [], frontline: WORLD_ORIGIN_Y, cameraY: WORLD_ORIGIN_Y - CAMERA_FRONT_Y,
+    spawnExposure: { stray: 0, runner: 0, heavy: 0, swarm: 0 },
+    nextSpawnExposure: { stray: 0, runner: 0, heavy: 0, swarm: 0 },
+    retreatBias: 0, spawnIn: 1, paused: true, pauseReason: 'start', dangerAcknowledged: false, speed: 1,
     campSnapshot: null, stats: { kills: 0, damage: 0, recovery: 0, income: 0, collisions: 0, counter: 0, period: 0 },
     rates: { kills: 0, damage: 0, recovery: 0, income: 0 }, events: ['坑の入り口。前線の変化を見ながら進もう。'], comparison: null
   };
+  seedInitialField(s);
+  return s;
 }
 
 export function buy(s: GameState, id: string): boolean {
@@ -285,24 +302,78 @@ function heal(s: GameState): void {
 function recoverActiveAllies(s: GameState, dt: number): void {
   for (const ally of s.allies) if (active(ally)) recoverHp(s, ally, PASSIVE_RECOVERY_PER_SECOND * dt);
 }
-function spawn(s: GameState, y: number): void {
-  const depth = Math.max(0, (WORLD_ORIGIN_Y - y) * METRES_PER_UNIT);
-  const tier = Math.floor(depth / CAMP_INTERVAL);
-  const r = random(s);
-  const kind = ENEMY_KINDS[r < .17 + tier * .02 ? 1 : r < .28 + tier * .04 ? 2 : r < .47 + tier * .03 ? 3 : 0];
-  const factor = 1 + depth / 650;
+export function enemyDensity(depth: number): number {
+  return Math.min(MAX_ENEMY_DENSITY, ENEMY_DENSITY_AT_START + Math.max(0, depth) * ENEMY_DENSITY_PER_METRE);
+}
+function depthAt(y: number): number { return Math.max(0, (WORLD_ORIGIN_Y - y) * METRES_PER_UNIT); }
+function enemyKindAtRandom(s: GameState): (typeof ENEMY_KINDS)[number] {
+  const roll = random(s);
+  if (roll < ENEMY_KIND_SHARES.stray) return ENEMY_KINDS[0];
+  if (roll < ENEMY_KIND_SHARES.stray + ENEMY_KIND_SHARES.runner) return ENEMY_KINDS[1];
+  if (roll < ENEMY_KIND_SHARES.stray + ENEMY_KIND_SHARES.runner + ENEMY_KIND_SHARES.heavy) return ENEMY_KINDS[2];
+  return ENEMY_KINDS[3];
+}
+function spawn(s: GameState, y: number, kind: (typeof ENEMY_KINDS)[number]): void {
+  const depth = depthAt(y);
+  const hpFactor = 1 + depth / 1200;
   s.enemies.push({ ...kind, id: s.nextId++, kind: kind.id, x: .1 + random(s) * .8, y,
-    hp: kind.hp * factor, maxHp: kind.hp * factor,
+    hp: kind.hp * hpFactor, maxHp: kind.hp * hpFactor,
+    // Keep the established attack scaling while easing enemy durability growth.
     damage: kind.damage * (1 + depth / 1300), vy: 0, attackCd: 1 + random(s), flash: 0, impactCd: 0, alerted: false });
 }
-export function generateAhead(s: GameState): void {
-  // Persistent spatial frontier: moving back or waiting never regenerates a region.
-  const ahead = Math.min(s.frontline, s.cameraY) - 1.1;
-  while (s.generatedTo > ahead) {
-    // Each region contributes an arriving group; its flow grows as the expedition advances.
-    const count = 8 + 150 * Math.min(3, Math.floor(Math.max(0, s.best) / CAMP_INTERVAL));
-    for (let i = 0; i < count; i++) spawn(s, s.generatedTo - random(s) * .12);
-    s.generatedTo -= REGION_LENGTH;
+function integratedDensity(startDepth: number, distance: number): number {
+  // One metre slices preserve the small depth gradient across a sampled interval.
+  let total = 0;
+  for (let offset = 0; offset < distance; offset += 1) {
+    const slice = Math.min(1, distance - offset);
+    total += (enemyDensity(startDepth + offset) + enemyDensity(startDepth + offset + slice)) * .5 * slice;
+  }
+  return total;
+}
+export function initializeSpawnExposure(s: GameState, alreadySampledMetres: number): void {
+  const leadingAllyY = Math.min(...s.allies.filter(active).map(a => a.y));
+  const depth = depthAt(leadingAllyY);
+  const sampledDensity = integratedDensity(depth, alreadySampledMetres);
+  for (const kind of ENEMY_KINDS) {
+    const id = kind.id;
+    s.spawnExposure[id] = sampledDensity * ENEMY_KIND_SHARES[id];
+    s.nextSpawnExposure[id] = s.spawnExposure[id] + exponentialGap(s);
+  }
+}
+function seedInitialField(s: GameState): void {
+  // The visible 16m ahead of the frontline already contains its expected spatial population.
+  // Sample the Poisson field from the frontline forward so it is present when play begins.
+  let distanceAhead = 0;
+  while (distanceAhead < INITIAL_VISIBLE_FIELD_METRES) {
+    distanceAhead += exponentialGap(s) / enemyDensity(distanceAtFrontAhead(s, distanceAhead));
+    if (distanceAhead >= INITIAL_VISIBLE_FIELD_METRES) break;
+    const y = Math.min(...s.allies.filter(active).map(a => a.y)) - distanceAhead / METRES_PER_UNIT;
+    spawn(s, y, enemyKindAtRandom(s));
+  }
+  initializeSpawnExposure(s, INITIAL_VISIBLE_FIELD_METRES);
+}
+function distanceAtFrontAhead(s: GameState, distanceAhead: number): number {
+  const leadingAllyY = Math.min(...s.allies.filter(active).map(a => a.y));
+  return depthAt(leadingAllyY - distanceAhead / METRES_PER_UNIT);
+}
+export function advanceEncounterField(s: GameState, dt: number, squadForwardMps: number): void {
+  const squad = s.allies.filter(active);
+  if (!squad.length) return;
+  const leadingAllyY = Math.min(...squad.map(a => a.y));
+  // Spawn entities beyond the top edge, where their own approach carries them into view.
+  const spawnY = leadingAllyY - CAMERA_FRONT_Y - SPAWN_LEAD_UNITS;
+  const density = enemyDensity(depthAt(spawnY));
+  for (const kind of ENEMY_KINDS) {
+    const id = kind.id;
+    const enemyApproachMps = kind.speed * UNALERTED_ENEMY_SPEED_RATIO * METRES_PER_UNIT;
+    const relativeApproachMps = Math.max(0, squadForwardMps + enemyApproachMps);
+    // Each enemy kind is an independent spatial Poisson field. Integrating density ×
+    // relative travel makes the event rate emerge from movement rather than a spawn timer.
+    s.spawnExposure[id] += density * ENEMY_KIND_SHARES[id] * relativeApproachMps * dt;
+    while (s.nextSpawnExposure[id] <= s.spawnExposure[id]) {
+      spawn(s, spawnY, kind);
+      s.nextSpawnExposure[id] += exponentialGap(s);
+    }
   }
 }
 function moveEnemy(s: GameState, e: EnemyState, dt: number): void {
@@ -326,26 +397,48 @@ function moveEnemy(s: GameState, e: EnemyState, dt: number): void {
   if (e.attackCd <= 0) e.attackCd = enemyAttack(s, e) ? 1.55 : .12;
 }
 function contacts(s: GameState): void {
-  for (let i = 0; i < s.enemies.length; i++) {
-    const a = s.enemies[i];
-    if (a.hp <= 0) continue;
-    for (let j = i + 1; j < s.enemies.length; j++) {
-      const b = s.enemies[j];
-      if (b.hp <= 0) continue;
-      const dx = b.x - a.x, dy = b.y - a.y, d = Math.hypot(dx, dy) || .001;
-      const overlap = a.radius + b.radius - d;
-      if (overlap <= 0) continue;
-      const nx = dx / d, ny = dy / d;
-      const separation = overlap * .5;
-      a.x = clamp(a.x - nx * separation, .05, .95); b.x = clamp(b.x + nx * separation, .05, .95);
-      a.y -= ny * separation; b.y += ny * separation;
-      const impact = Math.abs(a.vy - b.vy);
-      const shared = (a.vy * a.mass + b.vy * b.mass) / (a.mass + b.mass);
-      a.vy = shared * .6; b.vy = shared * .6;
-      if (level(s, 'collision') && impact > .045 && a.impactCd <= 0 && b.impactCd <= 0) {
-        const damage = Math.min(33, impact * 115 * Math.sqrt(a.mass * b.mass));
-        damageEnemy(s, a, damage, 'collision'); damageEnemy(s, b, damage, 'collision');
-        a.impactCd = b.impactCd = .35; effect(s, a, b, '#efb977');
+  // A 0.12-unit grid bounds candidate checks to local cells; heavy enemies
+  // have a maximum combined radius of 0.082 units.
+  const cellSize = .12;
+  const buckets = new Map<string, number[]>();
+  const key = (x: number, y: number): string => `${Math.floor(x / cellSize)},${Math.floor(y / cellSize)}`;
+  // Rebuild once after the first separation pass so dense clusters can settle
+  // without returning to an all-pairs scan.
+  for (let pass = 0; pass < 2; pass++) {
+    buckets.clear();
+    for (let i = 0; i < s.enemies.length; i++) {
+      const enemy = s.enemies[i];
+      if (enemy.hp <= 0) continue;
+      const cell = key(enemy.x, enemy.y);
+      const bucket = buckets.get(cell);
+      if (bucket) bucket.push(i); else buckets.set(cell, [i]);
+    }
+    for (let i = 0; i < s.enemies.length; i++) {
+      const a = s.enemies[i];
+      if (a.hp <= 0) continue;
+      const cellX = Math.floor(a.x / cellSize), cellY = Math.floor(a.y / cellSize);
+      for (let dxCell = -1; dxCell <= 1; dxCell++) for (let dyCell = -1; dyCell <= 1; dyCell++) {
+        const neighbors = buckets.get(`${cellX + dxCell},${cellY + dyCell}`) || [];
+        for (const j of neighbors) {
+          if (j <= i) continue;
+          const b = s.enemies[j];
+          if (b.hp <= 0) continue;
+          const dx = b.x - a.x, dy = b.y - a.y, d = Math.hypot(dx, dy) || .001;
+          const overlap = a.radius + b.radius - d;
+          if (overlap <= 0) continue;
+          const nx = dx / d, ny = dy / d;
+          const separation = overlap * .5;
+          a.x = clamp(a.x - nx * separation, .05, .95); b.x = clamp(b.x + nx * separation, .05, .95);
+          a.y -= ny * separation; b.y += ny * separation;
+          const impact = Math.abs(a.vy - b.vy);
+          const shared = (a.vy * a.mass + b.vy * b.mass) / (a.mass + b.mass);
+          a.vy = shared * .6; b.vy = shared * .6;
+          if (level(s, 'collision') && impact > .045 && a.impactCd <= 0 && b.impactCd <= 0) {
+            const damage = Math.min(33, impact * 115 * Math.sqrt(a.mass * b.mass));
+            damageEnemy(s, a, damage, 'collision'); damageEnemy(s, b, damage, 'collision');
+            a.impactCd = b.impactCd = .35; effect(s, a, b, '#efb977');
+          }
+        }
       }
     }
   }
@@ -424,13 +517,18 @@ export function step(s: GameState, dt = STEP): void {
   s.time += dt;
   updateRecovery(s, dt);
   recoverActiveAllies(s, dt);
-  generateAhead(s);
   for (const e of s.enemies) moveEnemy(s, e, dt);
   contacts(s);
   if (allDowned(s)) { enterCollapse(s); return; }
   squadDanger(s, dt);
+  const activeBeforeMove = s.allies.filter(active);
+  const squadYBeforeMove = activeBeforeMove.reduce((sum, a) => sum + a.y, 0) / activeBeforeMove.length;
   moveSquad(s, dt);
   separateAllies(s, dt);
+  const activeAfterMove = s.allies.filter(active);
+  const squadYAfterMove = activeAfterMove.reduce((sum, a) => sum + a.y, 0) / activeAfterMove.length;
+  const squadForwardMps = (squadYBeforeMove - squadYAfterMove) * METRES_PER_UNIT / dt;
+  advanceEncounterField(s, dt, squadForwardMps);
   for (const a of s.allies) {
     if (!active(a)) continue;
     a.cooldown -= dt;
@@ -489,8 +587,8 @@ export function retreat(s: GameState): boolean {
   }
   s.frontline = WORLD_ORIGIN_Y - s.camp / METRES_PER_UNIT;
   s.cameraY = s.frontline - CAMERA_FRONT_Y;
-  s.generatedTo = s.frontline - .5;
   s.retreatBias = 0;
+  seedInitialField(s);
   s.paused = true; s.pauseReason = 'camp'; s.comparison = null;
   log(s, `${saved.camp}mの拠点へ撤退。途中の資金と購入は戻った。`);
   return true;
