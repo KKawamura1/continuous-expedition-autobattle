@@ -300,7 +300,7 @@ export function generateAhead(s: GameState): void {
   const ahead = Math.min(s.frontline, s.cameraY) - 1.1;
   while (s.generatedTo > ahead) {
     // Each region contributes an arriving group; its flow grows as the expedition advances.
-    const count = 8 + 30 * Math.min(3, Math.floor(Math.max(0, s.best) / CAMP_INTERVAL));
+    const count = 8 + 150 * Math.min(3, Math.floor(Math.max(0, s.best) / CAMP_INTERVAL));
     for (let i = 0; i < count; i++) spawn(s, s.generatedTo - random(s) * .12);
     s.generatedTo -= REGION_LENGTH;
   }
