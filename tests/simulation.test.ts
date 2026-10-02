@@ -16,15 +16,6 @@ function run(s: GameState, seconds: number): void {
   for (let i = 0; i < Math.round(seconds / STEP) && !s.paused; i++) step(s, STEP);
 }
 
-function runUntilCamp(s: GameState, seconds: number): void {
-  for (let i = 0; i < Math.round(seconds / STEP); i++) {
-    if (s.pauseReason === 'danger') resume(s);
-    if (s.paused) return;
-    step(s, STEP);
-    if (s.pauseReason === 'camp' || s.pauseReason === 'collapse') return;
-  }
-}
-
 function runAutonomously(s: GameState, seconds: number): void {
   for (let i = 0; i < Math.round(seconds / STEP); i++) {
     if (s.paused) {
