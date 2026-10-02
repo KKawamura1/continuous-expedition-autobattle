@@ -2,6 +2,7 @@ import { WORLD_SCALE, has } from './content';
 import type { Enemy, State } from './types';
 import { drawBody, drawHorns, drawJaw } from './creature-art';
 import { drawGirl } from './girl-art';
+import { drawSand } from './terrain-art';
 const INK = '#263a3b', BONE = '#dfd8b6';
 function poly(c: CanvasRenderingContext2D, points: number[][], fill: string, stroke = INK, width = 2): void {
   c.beginPath(); points.forEach(([x,y], i) => i ? c.lineTo(x,y) : c.moveTo(x,y)); c.closePath();
@@ -15,8 +16,8 @@ function line(c: CanvasRenderingContext2D, pts: number[][], color: string, width
 }
 function hash(i: number): number { return ((Math.sin(i * 127.1 + 311.7) * 43758.5453) % 1 + 1) % 1; }
 function ground(c: CanvasRenderingContext2D, s: State, h: number): void {
-  c.fillStyle='#b9a079'; c.fillRect(0,0,390,h);
   const travel=s.distance*WORLD_SCALE;
+  drawSand(c, travel, h);
   const from=Math.floor(travel/160)-1,to=Math.ceil((travel+h)/160)+1;
   for(let row=from;row<=to;row++){
     const y=row*160-travel;
@@ -50,21 +51,52 @@ function ground(c: CanvasRenderingContext2D, s: State, h: number): void {
   }
 }
 function enemy(c: CanvasRenderingContext2D, e: Enemy, x: number, y: number, t: number): void {
-  c.save();c.translate(x,y);c.rotate(Math.atan2(e.vx,Math.max(2,-e.vy*4))*.35);
-  const r=e.radius, stride=Math.sin(t*(e.kind==='wolf'?20:12)+e.id)*2;
-  oval(c,2,5,r*1.1,r*.75,'#877d61');
-  const fill=e.flash>0?'#f4e4bc':e.kind==='beetle'?'#545246':e.kind==='wolf'?'#776653':'#6c5140';
-  if(e.kind==='beetle'){
-    for(const side of [-1,1])for(let i=-1;i<=1;i++)line(c,[[side*4,i*5],[side*(r+3),i*5+stride],[side*(r+5),i*6+3]],'#45473d',1.8);
-    oval(c,0,0,r*.8,r*1.2,fill,INK);line(c,[[0,-r],[0,r]],'#b3a17d',1);oval(c,0,7,4,4,'#353e37');
-  }else{
-    for(const side of [-1,1])for(const yy of [-6,5])line(c,[[side*r*.5,yy],[side*(r+3),yy+stride]],fill,4);
-    oval(c,0,-3,r*.8,r*1.25,fill,INK);
-    poly(c,[[-r*.65,4],[-r*.8,11],[0,17],[r*.8,11],[r*.65,4]],fill);
-    poly(c,[[-r*.7,6],[-r,1],[-r*.3,2]],fill);poly(c,[[r*.7,6],[r,1],[r*.3,2]],fill);
-    if(e.kind==='boar'){line(c,[[-9,12],[-12,17],[-7,15]],BONE,3);line(c,[[9,12],[12,17],[7,15]],BONE,3);}
-    else line(c,[[0,-r*1.5],[3,-r*2]],fill,4);
-    oval(c,-4,10,1.3,1.3,'#d8ba7c');oval(c,4,10,1.3,1.3,'#d8ba7c');
+  c.save(); c.translate(x, y); c.rotate(Math.atan2(e.vx, Math.max(2, -e.vy * 4)) * .35);
+  const r = e.radius, stride = Math.sin(t * (e.kind === 'wolf' ? 20 : 12) + e.id) * 2;
+  oval(c, 2, 5, r * 1.05, r * .8, '#574e3a30');
+  const fill = c.createLinearGradient(-r, -r, r, r);
+  if (e.flash > 0) { fill.addColorStop(0, '#fff0cc'); fill.addColorStop(1, '#cbb67a'); }
+  else if (e.kind === 'beetle') { fill.addColorStop(0, '#79816a'); fill.addColorStop(.4, '#4c5b4e'); fill.addColorStop(1, '#253f3c'); }
+  else { fill.addColorStop(0, e.kind === 'wolf' ? '#aaa392' : '#93806b'); fill.addColorStop(.5, e.kind === 'wolf' ? '#777a70' : '#69554a'); fill.addColorStop(1, '#3d403a'); }
+  const outline = '#384239';
+  if (e.kind === 'beetle') {
+    for (const side of [-1, 1]) for (let i = -1; i <= 1; i++) {
+      line(c, [[side * 4, i * 5], [side * (r + 3), i * 5 + stride], [side * (r + 5), i * 6 + 3]], '#41493d', 1.6);
+      line(c, [[side * (r + 2), i * 5 + stride], [side * (r + 4), i * 6 + 3]], '#88886b', .6);
+    }
+    oval(c, 0, 0, r * .8, r * 1.1, fill, outline);
+    c.beginPath(); c.moveTo(0, -r); c.quadraticCurveTo(-2, 0, 0, r); c.strokeStyle = '#263c34'; c.lineWidth = 1.2; c.stroke();
+    c.beginPath(); c.moveTo(-4, -r + 2); c.quadraticCurveTo(-7, 0, -4, 4); c.strokeStyle = '#c1bea0'; c.lineWidth = .8; c.stroke();
+    oval(c, 0, r * .8, 4.5, 4, fill, outline);
+    line(c, [[-3, r + 1], [-5, r + 5], [-3, r + 6]], '#444a3b', 1.2);
+    line(c, [[3, r + 1], [5, r + 5], [3, r + 6]], '#444a3b', 1.2);
+  } else {
+    for (const side of [-1, 1]) for (const yy of [-6, 5]) {
+      line(c, [[side * r * .5, yy], [side * (r + 1), yy + stride], [side * (r + 3), yy + 3 + stride]], '#4c5045', 3.4);
+      line(c, [[side * r * .5, yy], [side * (r + 1), yy + stride]], e.kind === 'wolf' ? '#969786' : '#847363', 2);
+    }
+    if (e.kind === 'wolf') {
+      c.beginPath(); c.moveTo(0, -r); c.bezierCurveTo(-2, -r * 2.1, 6, -r * 2.3, 2, -r * 2.7);
+      c.strokeStyle = '#555e54'; c.lineWidth = 4; c.lineCap = 'round'; c.stroke();
+    }
+    oval(c, 0, -3, r * .78, r * 1.3, fill, outline);
+    c.lineWidth = .8; c.strokeStyle = '#c1bd9e';
+    c.beginPath(); c.moveTo(-2, -r); c.bezierCurveTo(-4, -5, -2, 0, -3, 5); c.stroke();
+    c.beginPath(); c.moveTo(-r * .65, 3); c.quadraticCurveTo(-r, 8, -r * .4, 12);
+    c.quadraticCurveTo(0, e.kind === 'wolf' ? 19 : 17, r * .4, 12);
+    c.quadraticCurveTo(r, 8, r * .65, 3); c.closePath();
+    c.fillStyle = fill; c.fill(); c.strokeStyle = outline; c.lineWidth = 1.2; c.stroke();
+    for (const side of [-1, 1]) {
+      poly(c, [[side * r * .6, 6], [side * r * .82, -1], [side * r * .15, 4]], '#686d5d', outline, .8);
+      line(c, [[side * r * .6, 4], [side * r * .67, 1]], '#b5a88c', .7);
+      oval(c, side * r * .35, 9, 1.1, .8, '#d0bb75');
+    }
+    oval(c, 0, e.kind === 'wolf' ? 15 : 14, e.kind === 'wolf' ? 2.5 : 4, 2, '#343d35');
+    if (e.kind === 'boar') {
+      line(c, [[-9, 12], [-12, 17], [-8, 15]], '#e7dabb', 2);
+      line(c, [[9, 12], [12, 17], [8, 15]], '#e7dabb', 2);
+      for (let i = -1; i <= 1; i++) line(c, [[i * 3, -18], [i * 3 + 1, -9]], '#4e473e', 1.2);
+    }
   }
   c.restore();
 }

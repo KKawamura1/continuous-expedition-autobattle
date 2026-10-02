@@ -17,7 +17,7 @@ const defs = `<defs>
   </pattern>
 </defs>`;
 
-export function paint(c: CanvasRenderingContext2D, key: string, markup: string, x: number, y: number, width: number, height: number): void {
+export function paint(c: CanvasRenderingContext2D, key: string, markup: string | (() => string), x: number, y: number, width: number, height: number): void {
   let sprite = sprites.get(key);
   if (!sprite) {
     const image = new Image();
@@ -29,7 +29,8 @@ export function paint(c: CanvasRenderingContext2D, key: string, markup: string, 
       surface.getContext('2d')!.drawImage(image, 0, 0, surface.width, surface.height);
       target.surface = surface;
     };
-    image.src = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(`<svg xmlns="http://www.w3.org/2000/svg" width="${width * 2}" height="${height * 2}" viewBox="${x} ${y} ${width} ${height}">${defs}${markup}</svg>`)}`;
+    const art = typeof markup === 'function' ? markup() : markup;
+    image.src = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(`<svg xmlns="http://www.w3.org/2000/svg" width="${width * 2}" height="${height * 2}" viewBox="${x} ${y} ${width} ${height}">${defs}${art}</svg>`)}`;
     sprites.set(key, sprite);
     // Mutations produce new horn configurations; bound decoded artwork memory.
     if (sprites.size > 18) sprites.delete(sprites.keys().next().value!);
@@ -126,7 +127,7 @@ export function drawBody(c: CanvasRenderingContext2D): void {
 
 export function drawHorns(c: CanvasRenderingContext2D, mutations: MutationId[]): void {
   const key = mutations.filter(m => ['curl', 'heavy-horn', 'branch'].includes(m)).sort().join();
-  paint(c, `horn-${key}`, hornArt(mutations), -240, -110, 480, 225);
+  paint(c, `horn-${key}`, () => hornArt(mutations), -240, -110, 480, 225);
 }
 
 export function drawJaw(c: CanvasRenderingContext2D, wide: boolean, opening: number): void {
