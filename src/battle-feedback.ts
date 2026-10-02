@@ -18,14 +18,14 @@ export function motionTrails(c: CanvasRenderingContext2D, s: State, head: number
     const event=s.effects.find(f=>f.targetId===e.id&&['pull','sweep','rebound','collision'].includes(f.type));
     if(!event||h.length<2||reducedMotion)continue;
     const points=h.map(p=>[195+p.x,head-(p.y-s.distance)*WORLD_SCALE]);
-    c.save();c.globalAlpha=.55;stroke(c,points,EFFECT_COLOR[event.type],event.type==='pull'?3:2);c.restore();
+    c.save();c.globalAlpha*=.55;stroke(c,points,EFFECT_COLOR[event.type],event.type==='pull'?3:2);c.restore();
   }
 }
 export function enemyHealth(c: CanvasRenderingContext2D,e:Enemy,x:number,y:number,s:State):void {
   const active=s.effects.find(f=>f.targetId===e.id&&f.type!=='dust'||f.otherId===e.id);
   if(e.hpTime<=0&&e.hp>=e.maxHp&&e.kind!=='boar')return;
   const width=Math.max(20,e.radius*2.4),ratio=Math.max(0,Math.min(1,e.hp/e.maxHp));
-  c.save();c.globalAlpha=e.hpTime>0?1:.5;
+  c.save();c.globalAlpha*=e.hpTime>0?1:.5;
   c.fillStyle='#17313be6';c.beginPath();c.roundRect(x-width/2-1,y-e.radius-12,width+2,5,2);c.fill();
   c.fillStyle=ratio<.3?'#ef9972':'#f2d392';c.fillRect(x-width/2,y-e.radius-11,width*ratio,3);
   if(active&&active.type!=='pull'&&active.type!=='hook'){
@@ -41,7 +41,7 @@ export function battleEffects(c: CanvasRenderingContext2D,s:State,head:number,re
     const target=s.enemies.find(e=>e.id===f.targetId);
     const tx=195+(target?.x??f.targetX??f.x),ty=head-((target?.y??f.targetY??f.y)-s.distance)*WORLD_SCALE;
     const color=EFFECT_COLOR[f.type];
-    c.save();c.globalAlpha=(1-p)*.9;
+    c.save();c.globalAlpha*=(1-p)*.9;
     if(f.type==='pull'){
       // Tongue is an organ extending from the jaw; horns and tentacles pull sideways.
       if(f.source==='tongue'){
