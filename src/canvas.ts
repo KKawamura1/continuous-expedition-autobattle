@@ -3,6 +3,8 @@ import type { Enemy, State } from './types';
 import { drawBody, drawHorns, drawJaw } from './creature-art';
 import { drawGirl } from './girl-art';
 import { drawSand } from './terrain-art';
+import { battleHead, bodyOffset } from './body-layout';
+import { battleEffects, enemyHealth, motionTrails, newest } from './battle-feedback';
 const INK = '#263a3b', BONE = '#dfd8b6';
 function poly(c: CanvasRenderingContext2D, points: number[][], fill: string, stroke = INK, width = 2): void {
   c.beginPath(); points.forEach(([x,y], i) => i ? c.lineTo(x,y) : c.moveTo(x,y)); c.closePath();
@@ -51,7 +53,7 @@ function ground(c: CanvasRenderingContext2D, s: State, h: number): void {
   }
 }
 function enemy(c: CanvasRenderingContext2D, e: Enemy, x: number, y: number, t: number): void {
-  c.save(); c.translate(x, y); c.rotate(Math.atan2(e.vx, Math.max(2, -e.vy * 4)) * .35);
+  c.save(); c.translate(x, y); c.scale(e.flash>0?1.10:1,e.flash>0?.90:1); c.rotate(Math.atan2(e.vx, Math.max(2, -e.vy * 4)) * .35);
   const r = e.radius, stride = Math.sin(t * (e.kind === 'wolf' ? 20 : 12) + e.id) * 2;
   oval(c, 2, 5, r * 1.05, r * .8, '#574e3a30');
   const fill = c.createLinearGradient(-r, -r, r, r);
@@ -100,13 +102,19 @@ function enemy(c: CanvasRenderingContext2D, e: Enemy, x: number, y: number, t: n
   }
   c.restore();
 }
-function creature(c: CanvasRenderingContext2D, s: State, head: number, h: number, idle: number): void {
+function creature(c: CanvasRenderingContext2D, s: State, head: number, h: number, idle: number, reducedMotion=false): void {
   const m = s.mutations;
-  const sweep = s.effects.find(e => e.type === 'sweep');
-  const bite = s.effects.find(e => e.type === 'bite');
+  const sweep = newest(s, 'sweep');
+  const bite = newest(s, 'bite');
+  const collision = newest(s, 'collision');
   const impact = sweep ? Math.sin(sweep.life / sweep.maxLife * Math.PI) : 0;
   const wave = Math.sin(s.time * (has(m, 'fast') ? 5 : 2.2)) * (has(m, 'heavy-neck') ? 1.5 : 3);
-  c.save(); c.translate(195 + wave + impact * 3, head + Math.sin(idle * 1.3) * 1.2);
+  const bitePhase = bite ? 1-bite.life/bite.maxLife : 1;
+  const lunge = bite ? Math.sin(Math.min(1,bitePhase/.45)*Math.PI)*9 : 0;
+  const ready = s.mode==='running'&&s.bite<.13&&s.enemies.some(e=>e.y-s.distance<18&&Math.abs(e.x)<(has(m,'wide-jaw')?135:65));
+  const opening = ready ? (1-s.bite/.13)*19 : bite ? Math.max(0,1-bitePhase/.24)*22 : 0;
+  const recoil = collision ? Math.sin(collision.life/collision.maxLife*Math.PI)*Math.min(3,(collision.strength??0)/10) : 0;
+  c.save(); c.translate(195 + (reducedMotion?0:wave+impact*7), head + (reducedMotion?0:Math.sin(idle*1.3)*1.2-lunge+recoil));
   c.scale(1 + Math.sin(idle * 1.3) * .002, 1);
   drawBody(c);
   // Anatomical additions share the art's shaded, rounded surface language.
@@ -160,8 +168,8 @@ function creature(c: CanvasRenderingContext2D, s: State, head: number, h: number
     }
     c.restore();
   }
-  if (bite) oval(c, 0, 9, has(m, 'wide-jaw') ? 114 : 86, 18, '#122930');
-  drawJaw(c, has(m, 'wide-jaw'), bite ? Math.sin(bite.life / bite.maxLife * Math.PI) * 12 : 0);
+  if (opening>0) oval(c, 0, 11, has(m, 'wide-jaw') ? 112 : 86, 9+opening*.65, '#11262f');
+  drawJaw(c, has(m, 'wide-jaw'), reducedMotion?0:opening);
   if (has(m, 'spring-jaw')) {
     c.beginPath(); c.moveTo(-80, 16); c.quadraticCurveTo(0, 55, 80, 16);
     c.strokeStyle = '#c4c6a6'; c.lineWidth = 3; c.stroke();
@@ -182,29 +190,21 @@ function creature(c: CanvasRenderingContext2D, s: State, head: number, h: number
   }
   c.restore();
 }
-export interface View { height: number; reveal: number; idle: number }
+export interface View { height: number; reveal: number; idle: number; reducedMotion?: boolean }
 export function draw(c: CanvasRenderingContext2D, s: State, view: View): void {
   const {height:h,reveal,idle}=view;
   c.clearRect(0,0,390,h);
-  c.save(); c.translate(0,-reveal*h*.34);
+  const reducedMotion=!!view.reducedMotion;
+  const baseHead=battleHead(h,s.speed), offset=bodyOffset(h)*reveal;
+  const heavyBite=newest(s,'bite');
+  const shake=!reducedMotion&&reveal<.05&&heavyBite&&(heavyBite.strength??0)>55 ? Math.sin(heavyBite.life*95)*2*heavyBite.life/heavyBite.maxLife : 0;
+  c.save();c.translate(shake,offset);
   ground(c,s,h*1.5);
-  const head=h*.60+(s.speed<0?Math.min(15,-s.speed*4):0);
-  creature(c,s,head,h,idle);
-  // Enemies use the same surface as physics; rendering cannot invent a separate front line.
-  for(const e of s.enemies){const y=head-(e.y-s.distance)*WORLD_SCALE;if(y>-40&&y<h+40)enemy(c,e,195+e.x,y,s.time);}
-  for(const e of s.effects){
-    const y=head-(e.y-s.distance)*WORLD_SCALE, x=195+e.x, p=1-e.life/e.maxLife;
-    c.globalAlpha=1-p;
-    if(e.type==='pull'){
-      line(c,[[x,y],[x+(e.targetX??0)*.2,y-22],[195+(e.targetX??0),head-((e.targetY??s.distance)-s.distance)*WORLD_SCALE]],'#c79c7b',4);
-    }else if(e.type==='dust'){
-      for(let i=0;i<4;i++)oval(c,x+Math.cos(i*2)*p*14,y+Math.sin(i*2)*p*14,2,2,'#e5ce9e');
-    }else{
-      const r=e.type==='impact'?8:12;
-      line(c,[[x-r-p*5,y-3],[x,y-8-p*4],[x+r+p*5,y-3]],e.type==='bite'?'#f5ddaa':'#d5d9b7',2);
-    }
-    c.globalAlpha=1;
-  }
+  creature(c,s,baseHead,h,idle,reducedMotion);
+  motionTrails(c,s,baseHead,reducedMotion);
+  // The HP and contact effects share exactly the same world coordinates as physics.
+  for(const e of s.enemies){const y=baseHead-(e.y-s.distance)*WORLD_SCALE;if(y+offset>-40&&y+offset<h+40){enemy(c,e,195+e.x,y,s.time);enemyHealth(c,e,195+e.x,y,s);}}
+  battleEffects(c,s,baseHead,reducedMotion);
   c.restore();
   if(s.health<75){const g=c.createRadialGradient(195,h*.6,120,195,h*.6,h*.7);g.addColorStop(0,'#8e3c2900');g.addColorStop(1,`rgba(112,40,25,${(75-s.health)/125})`);c.fillStyle=g;c.fillRect(0,0,390,h);}
   if(reveal>0){c.fillStyle=`rgba(21,38,35,${reveal*.15})`;c.fillRect(0,0,390,h);}

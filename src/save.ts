@@ -1,4 +1,4 @@
-import { ENEMIES, MAX_HEALTH, MUTATIONS, SEGMENT } from './content';
+import { ENEMIES, INITIAL_UNLOCKS, MAX_HEALTH, MUTATIONS, SEGMENT } from './content';
 import { createState } from './simulation';
 import type { EnemyKind, MutationId, State } from './types';
 export const SAVE_KEY = 'giant-creature-v2';
@@ -22,10 +22,15 @@ export function decode(raw: string | null): State | null {
       if(!number(e.id,1,1e9)||seen.has(e.id))return null;seen.add(e.id);
       const b: Record<string,[number,number]>={x:[-250,250],y:[checkpoint-100,checkpoint+600],vx:[-5000,5000],vy:[-1000,1000],hp:[.001,500],contact:[0,1e8],flash:[0,1],collisionCooldown:[-1e9,1]};
       for(const [k,[lo,hi]]of Object.entries(b))if(!number(e[k],lo,hi))return null;
-      const spec=ENEMIES[e.kind as EnemyKind];if(e.mass!==spec.mass||e.radius!==spec.radius||e.speed!==spec.speed)return null;
+      const spec=ENEMIES[e.kind as EnemyKind];
+      const maxHp = spec.hp * (1 + Math.min(checkpoint / SEGMENT, 6) * .06);
+      if (e.maxHp !== undefined && e.maxHp !== maxHp || e.hp > maxHp) return null;
+      if (e.hpTime !== undefined && !number(e.hpTime, 0, 2.2)) return null;
+      e.maxHp = maxHp; e.hpTime ??= 0;
+      if(e.mass!==spec.mass||e.radius!==spec.radius||e.speed!==spec.speed)return null;
     }
     if((v.nextId as number)<=Math.max(0,...seen))return null;
-    const s={...createState(),...v,effects:[],reaction:'',reactionTime:0,reactionCooldown:0} as State;
+    const s={...createState(),...v,unlocked:[...new Set([...v.unlocked,...INITIAL_UNLOCKS])],effects:[],reaction:'',reactionTime:0,reactionCooldown:0} as State;
     if(s.mode==='running')s.mode='body';
     return s;
   } catch { return null; }

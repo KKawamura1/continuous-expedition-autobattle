@@ -11,8 +11,20 @@ export function react(s: State, text: string, force = false): void {
 }
 export function start(s: State): void { if (s.mode === 'title') { s.mode = 'running'; react(s, 'いけいけー！', true); } }
 export function cost(s: State, id: MutationId): number { return (MUTATIONS.find(m => m.id === id)?.cost ?? Infinity) + s.mutations.length * 2; }
+export function mutationBlock(s: State, id: MutationId): string | null {
+  const m = MUTATIONS.find(m => m.id === id);
+  if (!m) return '不明な変異';
+  if (s.mutations.includes(id)) return '取得済み';
+  if (!s.unlocked.includes(id)) return '拠点で解禁';
+  const missing = m.requires?.filter(id => !s.mutations.includes(id)) ?? [];
+  if (missing.length) return `前提: ${missing.map(id => MUTATIONS.find(m => m.id === id)!.name).join(' + ')}`;
+  const excluded = MUTATIONS.find(other => s.mutations.includes(other.id) && (m.excludes?.includes(other.id) || other.excludes?.includes(id)));
+  if (excluded) return `${excluded.name}と排他`;
+  if (s.growth < cost(s, id)) return `資源不足 · あと${cost(s, id) - s.growth}`;
+  return null;
+}
 export function mutate(s: State, id: MutationId): boolean {
-  if (s.mode !== 'body' || !s.unlocked.includes(id) || s.mutations.includes(id) || s.growth < cost(s, id)) return false;
+  if (s.mode !== 'body' || mutationBlock(s, id)) return false;
   s.growth -= cost(s, id); s.mutations.push(id); react(s, 'おおー！', true); return true;
 }
 export function unlock(s: State, id: MutationId): boolean {
@@ -30,14 +42,14 @@ export function spawnEnemy(s: State, kind?: EnemyKind, x?: number, y?: number): 
   const r = random(s);
   const selected = kind ?? (r < (stage % 3 === 1 ? .27 : .15) ? 'boar' : r < (stage % 3 === 2 ? .63 : .38) ? 'wolf' : 'beetle');
   const spec = ENEMIES[selected];
-  const e: Enemy = { ...spec, hp: spec.hp * (1 + Math.min(stage, 6) * .06), id: s.nextId++, kind: selected, x: x ?? -180 + random(s) * 360, y: y ?? s.distance + 145 + random(s) * 10, vx: 0, vy: -spec.speed, contact: 0, flash: 0, collisionCooldown: 0 };
+  const e: Enemy = { ...spec, hp: spec.hp * (1 + Math.min(stage, 6) * .06), maxHp: spec.hp * (1 + Math.min(stage, 6) * .06), hpTime: 0, id: s.nextId++, kind: selected, x: x ?? -180 + random(s) * 360, y: y ?? s.distance + 145 + random(s) * 10, vx: 0, vy: -spec.speed, contact: 0, flash: 0, collisionCooldown: 0 };
   s.enemies.push(e); return e;
 }
-function effect(s: State, type: Effect['type'], x: number, y: number, life = .35, target?: Enemy): void {
+function effect(s: State, type: Effect['type'], x: number, y: number, life = .35, target?: Enemy, extra: Partial<Effect> = {}): void {
   if (s.effects.length >= 100) return;
-  s.effects.push({ type, x, y, life, maxLife: life, targetX: target?.x, targetY: target?.y });
+  s.effects.push({ type, x, y, life, maxLife: life, targetX: target?.x, targetY: target?.y, targetId: target?.id, ...extra });
 }
-function damage(e: Enemy, amount: number): void { e.hp -= amount; e.flash = .12; }
+function damage(e: Enemy, amount: number): void { e.hp -= amount; e.flash = .12; e.hpTime = 2.2; }
 export function collide(a: Enemy, b: Enemy): number {
   const dx = b.x - a.x, dy = (b.y - a.y) * WORLD_SCALE;
   const d = Math.hypot(dx, dy), reach = a.radius + b.radius;
@@ -64,41 +76,45 @@ export function step(s: State, dt: number): void {
   s.time += dt; s.reactionTime = Math.max(0, s.reactionTime - dt); s.reactionCooldown -= dt;
   s.effects = s.effects.filter(e => { e.life -= dt; return e.life > 0; });
   const m = s.mutations, heavy = (has(m, 'heavy-horn') ? 1.65 : 1) * (has(m, 'heavy-neck') ? 1.5 : 1);
-  const sweepPeriod = (has(m, 'fast') ? .62 : 1.15) * (has(m, 'heavy-horn') ? 1.28 : 1) * (has(m, 'heavy-neck') ? 1.2 : 1);
+  const sweepPeriod = (has(m, 'fast') ? .62 : 1.15) * (has(m, 'heavy-horn') ? 1.28 : 1) * (has(m, 'heavy-neck') ? 1.2 : 1) * (has(m, 'ram-horn') ? 1.1 : 1) * (has(m, 'rapid-neck') ? .72 : 1);
   s.spawn += dt * .28 * (1 + Math.min(s.checkpoint / SEGMENT, 6) * .025) * Math.max(.8, 4.5 + s.speed);
   while (s.spawn >= 1 && s.enemies.length < 110) { s.spawn--; spawnEnemy(s); }
   s.spawn = Math.min(s.spawn, 2);
   s.bite -= dt; s.sweep -= dt; s.organ -= dt;
   const jawReady = s.bite <= 0, sweepReady = s.sweep <= 0;
-  if (jawReady) s.bite = 1.05;
+  if (jawReady) s.bite = has(m, 'crusher') ? 1.26 : 1.05;
   if (sweepReady) s.sweep = sweepPeriod;
-  const sweepTargets = new Set(sweepReady ? s.enemies.filter(e => e.y-s.distance<27 && e.y-s.distance>-16).sort((a,b)=>a.y-b.y).slice(0,has(m,'branch')?7:2).map(e=>e.id) : []);
+  const sweepTargets = new Set(sweepReady ? s.enemies.filter(e => e.y-s.distance<27 && e.y-s.distance>-16).sort((a,b)=>a.y-b.y).slice(0,has(m,'crown')?11:has(m,'branch')?7:2).map(e=>e.id) : []);
   let touching = 0;
   for (const e of s.enemies) {
-    e.flash = Math.max(0, e.flash - dt); e.collisionCooldown -= dt;
+    e.flash = Math.max(0, e.flash - dt); e.hpTime = Math.max(0, e.hpTime - dt); e.collisionCooldown -= dt;
     const ahead = e.y - s.distance;
     const contactY = s.distance + surface(e.x) + e.radius / WORLD_SCALE;
     const touchingBody = e.y <= contactY + .8;
     e.vy += (-e.speed - e.vy) * dt * (has(m, 'hook-scale') && touchingBody ? .35 : 1.7);
     e.vx *= Math.exp(-dt * (has(m, 'hook-scale') && touchingBody ? 8 : 2));
-    if (has(m, 'curl') && ahead < 25 && ahead > -14 && Math.abs(e.x) > 40) e.vx -= Math.sign(e.x) * 95 / e.mass * dt;
-    if (has(m, 'tentacle') && ahead < 55 && ahead > 0 && Math.abs(e.x) > 70) {
-      e.vx -= Math.sign(e.x) * 75 / e.mass * dt;
-      if (s.organ <= 0) effect(s, 'pull', Math.sign(e.x) * 125, s.distance - 12, .45, e);
+    if (has(m, 'curl') && ahead < 25 && ahead > -14 && Math.abs(e.x) > 40) {
+      e.vx -= Math.sign(e.x) * 95 / e.mass * dt;
+      if (!s.effects.some(f => f.type === 'pull' && f.targetId === e.id)) effect(s, 'pull', Math.sign(e.x) * 145, s.distance + 4, .32, e, { source: 'curl' });
+    }
+    if (has(m, 'tentacle') && ahead < (has(m, 'long-tentacle') ? 85 : 55) && ahead > 0 && Math.abs(e.x) > 70) {
+      e.vx -= Math.sign(e.x) * 75 * (has(m, 'double-tentacle') ? 1.5 : 1) / e.mass * dt;
+      if (!s.effects.some(f => f.type === 'pull' && f.targetId === e.id)) effect(s, 'pull', Math.sign(e.x) * 125, s.distance - 12, .4, e, { source: 'tentacle' });
     }
     if (has(m, 'tongue') && s.organ <= 0 && Math.abs(e.x) < 90 && ahead > 8 && ahead < 75) {
-      e.vy -= 30 / e.mass; effect(s, 'pull', 0, s.distance - 2, .5, e); s.organ = 2.7;
+      e.vy -= 30 * (has(m, 'barbed-tongue') ? 1.6 : 1) / e.mass; effect(s, 'pull', 0, s.distance - 2, .55, e, { source: 'tongue' }); s.organ = 2.7;
     }
     if (jawReady && ahead < 15 && ahead > -18 && Math.abs(e.x) < (has(m, 'wide-jaw') ? 135 : 65)) {
       const closing = Math.max(0, s.speed - e.vy);
-      damage(e, (has(m, 'wide-jaw') ? 29 : 39) + (has(m, 'spring-jaw') ? closing * 2.4 : 0));
-      effect(s, 'bite', e.x, e.y); e.vy += 8 / e.mass;
+      const amount = (has(m, 'wide-jaw') ? 29 : 39) + (has(m, 'spring-jaw') ? closing * 2.4 : 0) + (has(m, 'crusher') ? 20 : 0);
+      damage(e, amount);
+      effect(s, 'bite', e.x, e.y, .38, e, { strength: amount, source: has(m, 'spring-jaw') ? 'spring-jaw' : has(m, 'crusher') ? 'crusher' : undefined }); e.vy += 8 / e.mass;
     }
     if (sweepTargets.has(e.id)) {
-      damage(e, (has(m, 'branch') ? 14 : 18) * heavy);
-      e.vy += 16 * heavy * (has(m, 'fast') ? .75 : 1) * (has(m, 'branch') ? .7 : 1) / e.mass;
+      damage(e, (has(m, 'branch') ? 14 : 18) * heavy * (has(m, 'ram-horn') ? 1.4 : 1));
+      e.vy += 16 * heavy * (has(m, 'ram-horn') ? 1.25 : 1) * (has(m, 'rapid-neck') ? .8 : 1) * (has(m, 'fast') ? .75 : 1) * (has(m, 'branch') ? .7 : 1) / e.mass;
       e.vx += Math.sign(e.x || 1) * 14 * heavy / e.mass;
-      effect(s, 'sweep', e.x, e.y, .28);
+      effect(s, 'sweep', e.x, e.y, .4, e, { dx: e.vx, dy: e.vy, strength: heavy, source: has(m, 'heavy-horn') ? 'heavy-horn' : has(m, 'branch') ? 'branch' : undefined });
     }
     const previousVy = e.vy;
     e.x = clamp(e.x + e.vx * dt, -187, 187); e.y += e.vy * dt;
@@ -106,10 +122,16 @@ export function step(s: State, dt: number): void {
       const impactSpeed = Math.max(0, s.speed - previousVy);
       e.y = contactY; e.contact += dt; e.vy = Math.max(e.vy, s.speed);
       touching += e.mass; s.health -= e.mass * dt * .8;
-      if (has(m, 'thorn')) damage(e, dt * (2 + Math.abs(e.vx) * .19 + impactSpeed * .9));
-      if (has(m, 'hook-scale')) e.vx *= Math.exp(-dt * 12);
+      if (has(m, 'thorn')) {
+        damage(e, dt * (2 + Math.abs(e.vx) * .19 + impactSpeed * .9) * (has(m, 'razor-scale') ? 1.8 : 1));
+        if (!s.effects.some(f => f.type === 'scrape' && f.targetId === e.id)) effect(s, 'scrape', e.x, e.y, .25, e, { source: 'thorn' });
+      }
+      if (has(m, 'hook-scale')) {
+        e.vx *= Math.exp(-dt * 12);
+        if (!s.effects.some(f => f.type === 'hook' && f.targetId === e.id)) effect(s, 'hook', e.x, e.y, .45, e, { source: 'hook-scale' });
+      }
       if (has(m, 'elastic-scale') && impactSpeed > 4 && e.collisionCooldown <= 0) {
-        e.vy = s.speed + impactSpeed * .8; damage(e, impactSpeed * .8); e.collisionCooldown = .3; effect(s, 'impact', e.x, e.y);
+        e.vy = s.speed + impactSpeed * (has(m, 'rebound-scale') ? 1.25 : .8); damage(e, impactSpeed * .8 * (has(m, 'rebound-scale') ? 1.5 : 1)); e.collisionCooldown = .3; effect(s, 'rebound', e.x, e.y, .4, e, { source: 'elastic-scale', dx: e.vx, dy: e.vy });
       }
     } else e.contact = 0;
   }
@@ -118,7 +140,10 @@ export function step(s: State, dt: number): void {
   for (const e of s.enemies) {
     const gx = Math.floor(e.x / 32), gy = Math.floor(e.y * WORLD_SCALE / 32);
     for (let ox = -1; ox <= 1; ox++) for (let oy = -1; oy <= 1; oy++) {
-      for (const other of grid.get(`${gx + ox}:${gy + oy}`) ?? []) if (collide(other, e) > 0) effect(s, 'impact', e.x, e.y);
+      for (const other of grid.get(`${gx + ox}:${gy + oy}`) ?? []) {
+        const energy = collide(other, e);
+        if (energy > 0) effect(s, 'collision', (e.x + other.x) / 2, (e.y + other.y) / 2, .32, e, { otherId: other.id, strength: energy });
+      }
     }
     const key = `${gx}:${gy}`; const cell = grid.get(key) ?? []; cell.push(e); grid.set(key, cell);
   }
@@ -127,7 +152,7 @@ export function step(s: State, dt: number): void {
     s.growth += e.kind === 'boar' ? 3 : 1; s.kills++; effect(s, 'dust', e.x, e.y, .6); return false;
   });
   s.pressure += (touching - s.pressure) * dt * 3;
-  const targetSpeed = clamp(3.2 - s.pressure * 1.35 / (has(m, 'heavy-neck') ? 1.6 : 1) - (MAX_HEALTH - s.health) * .007, -3.4, 3.2);
+  const targetSpeed = clamp(3.2 - s.pressure * 1.35 / (has(m, 'anchor-neck') ? 2.4 : has(m, 'heavy-neck') ? 1.6 : 1) - (MAX_HEALTH - s.health) * .007, -3.4, 3.2);
   s.speed += (targetSpeed - s.speed) * dt * 2;
   s.health = clamp(s.health + 1.7 * dt, 0, MAX_HEALTH);
   s.distance = Math.max(s.checkpoint, s.distance + s.speed * dt); s.best = Math.max(s.best, s.distance);

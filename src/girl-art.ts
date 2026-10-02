@@ -37,7 +37,7 @@ function limb(c: CanvasRenderingContext2D, points: number[][], colour: string, w
 }
 
 export function drawGirl(c: CanvasRenderingContext2D, s: State, y: number, idle: number): void {
-  const alarm = s.pressure > 4, cheer = s.reactionTime > 0 && !alarm;
+  const alarm = s.pressure > 4 || s.health < 72, cheer = (s.reactionTime > 0 || s.effects.some(e => e.type === 'bite' && (e.strength ?? 0) > 55)) && !alarm;
   const feet = Math.sin(idle * 3.6), sway = Math.sin(idle * 1.7);
   c.save(); c.translate(5, y); c.rotate(alarm ? Math.sin(idle * 7) * .07 : sway * .025);
   c.fillStyle = '#0f2836aa'; c.beginPath(); c.ellipse(3, 12, 16, 9, .1, 0, Math.PI * 2); c.fill();

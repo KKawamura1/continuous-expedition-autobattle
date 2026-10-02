@@ -54,3 +54,35 @@ test('all three intended builds can reach a camp; seeded long runs remain bounde
   const builds: MutationId[][]=[['curl','wide-jaw','tentacle'],['tongue','spring-jaw','heavy-neck'],['heavy-horn','heavy-neck','elastic-scale']];
   for(const mutations of builds){const s=running();s.mutations=mutations;s.unlocked=MUTATIONS.map(m=>m.id);advance(s,450);assert.equal(s.mode,'camp',`${mutations.join(',')} reached ${s.distance} m (${s.mode})`);assert.equal(s.checkpoint,300);assert(s.enemies.length<=110);assert(Number.isFinite(s.health));}
 });
+
+test('branches reject incompatible purchases and deep mutations require their parent',()=>{
+  const s=running();s.mode='body';s.growth=200;
+  assert(!mutate(s,'ram-horn'));assert(mutate(s,'heavy-horn'));assert(!mutate(s,'branch'));assert(mutate(s,'ram-horn'));
+  assert(!mutate(s,'spring-jaw'));assert(mutate(s,'tongue'));assert(mutate(s,'barbed-tongue'));
+  assert(mutate(s,'fast'));assert(!mutate(s,'heavy-neck'));
+  const reverse=running();reverse.mode='body';reverse.growth=100;assert(mutate(reverse,'branch'));assert(!mutate(reverse,'heavy-horn'));
+});
+test('battle feedback describes real targets and distinguishes collision from scale rebound',()=>{
+  const pull=running();pull.mutations=['curl'];pull.bite=pull.sweep=10;const victim=spawnEnemy(pull,'boar',130,20);step(pull,.05);
+  assert(pull.effects.some(e=>e.type==='pull'&&e.source==='curl'&&e.targetId===victim.id));
+  const bite=running();bite.bite=0;bite.sweep=10;const target=spawnEnemy(bite,'boar',0,8);step(bite,.05);
+  assert(bite.effects.some(e=>e.type==='bite'&&e.targetId===target.id&&e.strength===39));assert.equal(target.maxHp,88);assert(target.hpTime>0);
+  const rebound=running();rebound.mutations=['elastic-scale'];rebound.bite=rebound.sweep=10;const fast=spawnEnemy(rebound,'wolf',100,0);fast.vy=-20;step(rebound,.05);
+  assert(rebound.effects.some(e=>e.type==='rebound'&&e.source==='elastic-scale'));assert(!rebound.effects.some(e=>e.type==='collision'));
+  const collision=running();collision.bite=collision.sweep=10;const a=spawnEnemy(collision,'boar',0,30),b=spawnEnemy(collision,'boar',0,35);a.vy=30;b.vy=-4;step(collision,.05);
+  assert(collision.effects.some(e=>e.type==='collision'&&e.targetId&&e.otherId&&e.strength!>0));
+});
+test('expensive deep mutations change damage, reach and push rather than only their labels',()=>{
+  const base=running(),deep=running();base.mutations=['wide-jaw'];deep.mutations=['wide-jaw','crusher'];base.bite=deep.bite=0;base.sweep=deep.sweep=10;
+  const a=spawnEnemy(base,'boar',0,8),b=spawnEnemy(deep,'boar',0,8);step(base,.05);step(deep,.05);assert.equal(a.hp-b.hp,20);assert(deep.bite>base.bite);
+  const short=running(),long=running();short.mutations=['tentacle'];long.mutations=['tentacle','long-tentacle'];short.bite=long.bite=short.sweep=long.sweep=10;
+  const ea=spawnEnemy(short,'boar',140,70),eb=spawnEnemy(long,'boar',140,70);step(short,.05);step(long,.05);assert(eb.vx<ea.vx);
+  const light=running(),heavy=running();light.mutations=['heavy-horn'];heavy.mutations=['heavy-horn','ram-horn'];light.bite=heavy.bite=10;light.sweep=heavy.sweep=0;
+  const el=spawnEnemy(light,'boar',100,20),eh=spawnEnemy(heavy,'boar',100,20);step(light,.05);step(heavy,.05);assert(eh.hp<el.hp);assert(eh.vy>el.vy);
+});
+test('previous v2 saves migrate enemy HP capacity without changing current HP or legacy builds',()=>{
+  const s=running();s.mutations=['heavy-horn','branch'];spawnEnemy(s,'boar',0,20);
+  const legacy=JSON.parse(encode(s));delete legacy.enemies[0].maxHp;delete legacy.enemies[0].hpTime;
+  const restored=decode(JSON.stringify(legacy));assert(restored);assert.equal(restored.enemies[0].maxHp,88);assert.equal(restored.enemies[0].hp,88);assert.deepEqual(restored.mutations,s.mutations);
+  const bad=JSON.parse(encode(s));bad.enemies[0].maxHp=900;assert.equal(decode(JSON.stringify(bad)),null);
+});
