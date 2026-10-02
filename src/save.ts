@@ -1,4 +1,4 @@
-import { ENEMIES, MAX_HEALTH, MUTATIONS, SEGMENT } from './content';
+import { ENEMIES, INITIAL_UNLOCKS, MAX_HEALTH, MUTATIONS, SEGMENT } from './content';
 import { createState } from './simulation';
 import type { EnemyKind, MutationId, State } from './types';
 export const SAVE_KEY = 'giant-creature-v2';
@@ -30,7 +30,7 @@ export function decode(raw: string | null): State | null {
       if(e.mass!==spec.mass||e.radius!==spec.radius||e.speed!==spec.speed)return null;
     }
     if((v.nextId as number)<=Math.max(0,...seen))return null;
-    const s={...createState(),...v,effects:[],reaction:'',reactionTime:0,reactionCooldown:0} as State;
+    const s={...createState(),...v,unlocked:[...new Set([...v.unlocked,...INITIAL_UNLOCKS])],effects:[],reaction:'',reactionTime:0,reactionCooldown:0} as State;
     if(s.mode==='running')s.mode='body';
     return s;
   } catch { return null; }
