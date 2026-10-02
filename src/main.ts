@@ -1,206 +1,110 @@
-import {
-  CAMP_INTERVAL, STEP, nearbyEnemyCount, buy, createGame, describe, format, pause, price,
-  refundAtCamp, resume, retreat, step
-} from './simulation.ts';
-import { createBattleRenderer } from './canvas.ts';
-import { ROSTER, UPGRADES } from './content.ts';
-import { decodeSave, encodeSave, SAVE_KEY } from './save.ts';
-import type { GameState, UpgradeGroup } from './types.ts';
 import './style.css';
-
-const app = document.querySelector<HTMLDivElement>('#app');
-if (!app) throw new Error('Game root element #app was not found.');
-let game: GameState;
-try {
-  const stored = localStorage.getItem(SAVE_KEY);
-  game = decodeSave(stored) || createGame();
+import { draw } from './canvas';
+import { MUTATIONS, PARTS, SEGMENT } from './content';
+import { cost, createState, depart, mutate, start, step, unlock } from './simulation';
+import { decode, encode, SAVE_KEY } from './save';
+import type { MutationId, Part, State } from './types';
+const app = document.querySelector<HTMLDivElement>('#app')!;
+app.innerHTML = `<main id="game" aria-label="巨大生物の連続遠征"><canvas id="field" aria-label="古代龍蛇と少女が荒野を進む戦場"></canvas><div id="ui"></div><button id="handle" aria-label="身体を引き上げて変異する"><span></span><small>身体を引き上げる</small></button><div id="notice" role="status"></div></main>`;
+const game = document.querySelector<HTMLElement>('#game')!;
+const canvas = document.querySelector<HTMLCanvasElement>('#field')!;
+const ctx = canvas.getContext('2d')!;
+const ui = document.querySelector<HTMLDivElement>('#ui')!;
+const handle = document.querySelector<HTMLButtonElement>('#handle')!;
+const notice = document.querySelector<HTMLDivElement>('#notice')!;
+let saved: State | null = null;
+try { saved = decode(localStorage.getItem(SAVE_KEY)); } catch { /* Storage can be unavailable in private browsing. */ }
+let s = saved ?? createState();
+let intro = true, selected: Part | null = null, reveal = 0, height = 844, idle = 0, last = 0, accumulator = 0, saveClock = 0, noticeTimer = 0;
+let lastSignature = '';
+function notify(message: string): void { notice.textContent=message;notice.classList.add('show');noticeTimer=4; }
+function persist(): void { try { localStorage.setItem(SAVE_KEY,encode(s)); } catch { notify('この端末では進行を保存できません'); } }
+function resize(): void {
+  const box=game.getBoundingClientRect();height=box.height/box.width*390;
+  const dpr=Math.min(devicePixelRatio||1,2);canvas.width=Math.round(box.width*dpr);canvas.height=Math.round(box.height*dpr);
+  ctx.setTransform(canvas.width/390,0,0,canvas.height/height,0,0);
 }
-catch { game = createGame(); }
-let showAll = false;
-let shopGroup: UpgradeGroup = 'structure';
-let lastFrame = 0;
-let accumulator = 0;
-let lastSave = 0;
-let lastUi = 0;
-
-app.innerHTML = `
-  <main class="shell">
-    <header class="masthead">
-      <div class="eyebrow">FIELD RECORD <span>●</span> 01 / THE SHAFT</div>
-      <div class="brand"><div><h1>坑の前線</h1><p>観測 · 改造 · 進軍</p></div><span class="chapter" id="chapter">旧市街 / 坑口</span></div>
-    </header>
-    <section class="dashboard" aria-label="遠征の状況">
-      <div class="distance"><div class="metric-label">現在地点 <span id="milestone">次の拠点まで 300m</span></div><div class="distance-value"><strong id="distance">0</strong><span>m</span></div></div>
-      <div class="velocity"><div class="metric-label">進軍速度</div><strong id="velocity">+0.0</strong><span> m/s</span><div class="velocity-meter"><i id="velocityBar"></i></div></div>
-    </section>
-    <div class="track"><div id="trackFill"></div><span id="trackStart">0m</span><span id="trackEnd">300m 拠点</span></div>
-    <section class="battle-panel" aria-label="戦場">
-      <canvas id="battle" role="img" aria-label="坑道を進み、敵と遭遇して5人が自律して戦う戦場"></canvas>
-      <div class="battle-overlay"><span id="fieldLabel">坑口の境界</span><span class="live" id="liveTag">一時停止中</span></div>
-      <div class="battle-footer"><span>↑ 未探索の坑道</span><span>前線 · 自律戦闘</span><span>↓ 調査隊</span></div>
-    </section>
-    <section class="readout" aria-label="観測値">
-      <div><span>滞留</span><strong id="crowd">0</strong><small>体</small></div>
-      <div><span>撃破圧</span><strong id="killRate">0.0</strong><small>/秒</small></div>
-      <div><span>被害</span><strong id="damageRate">0.0</strong><small id="recoveryRate">回復 0.0/秒</small></div>
-      <div><span>収入</span><strong id="incomeRate">0.0</strong><small>G/秒</small></div>
-    </section>
-    <p class="observation" id="observation"></p>
-    <section class="crew" aria-label="調査隊"><div class="section-title">調査隊 <span>5人</span></div><div id="crewRows"></div></section>
-    <div class="control-dock"><div class="wallet"><span>遠征資金</span><strong><span id="coins">0</span> G</strong></div><button id="pauseButton" class="primary">改造・一時停止</button><button id="speedButton" class="speed-button" aria-label="再生速度">1×</button></div>
-    <section class="workshop" id="workshop" aria-label="一時停止中の工房">
-      <div class="workshop-head"><div><span class="eyebrow">THE WORKSHOP</span><h2 id="workshopTitle">遠征を始める</h2></div><span class="workshop-status" id="workshopStatus">停止中</span></div>
-      <p id="workshopIntro"></p>
-      <div class="collapse-notice" id="collapseNotice" hidden><strong>最高到達地点 <span id="collapseBest">0</span>m</strong><p>戦闘不能になった仲間は、拠点で全員復帰します。</p></div>
-      <div class="comparison" id="comparison" hidden></div>
-      <div class="shop-tabs" id="shopTabs" role="group" aria-label="改造の種類"><button data-group="structure">戦い方を変える</button><button data-group="tuning">性能を調整する</button></div>
-      <div class="shop-list" id="shopList"></div>
-      <button id="showAll" class="secondary full">全ての候補を見る</button>
-      <div class="workshop-actions"><button id="refund" class="secondary">全額を再配分</button><button id="retreat" class="secondary danger">拠点へ撤退</button></div>
-      <button id="resume" class="primary full">進軍を再開 ↗</button>
-    </section>
-    <section class="journal"><div class="section-title">観測記録 <span id="best"></span></div><p id="event"></p></section>
-    <footer>試作版 · 移動ルールと数値はプレイで検証する仮説です</footer>
-  </main>`;
-
-const $ = <T extends HTMLElement = HTMLElement>(id: string): T => {
-  const element = document.getElementById(id);
-  if (!element) throw new Error('Game element #' + id + ' was not found.');
-  return element as T;
-};
-const canvas = $<HTMLCanvasElement>('battle');
-const renderer = createBattleRenderer(canvas);
-const save = () => { try { localStorage.setItem(SAVE_KEY, encodeSave(game)); } catch { /* Storage may be disabled. Play remains available. */ } };
-const number = (n: number): string => Math.round(n).toLocaleString('ja-JP');
-const sign = (n: number): string => (n >= 0 ? '+' : '') + format(n);
-
-function updateShop() {
-  const list = UPGRADES.filter(u => u.group === shopGroup);
-  const visible = showAll ? list : list.slice(0, 3);
-  $('shopList').innerHTML = visible.map(u => {
-    const acquired = game.upgrades[u.id] || 0;
-    const max = u.max || 1;
-    const full = acquired >= max;
-    const affordable = game.coins >= price(game, u.id);
-    return `<article class="upgrade ${full ? 'owned' : ''}"><div class="upgrade-top"><span class="owner">${u.owner}</span><span class="upgrade-level">${acquired ? `${acquired}/${max} 取得` : '未取得'}</span></div><h3>${u.name}</h3><p>${u.description}</p><button data-buy="${u.id}" ${full || !affordable ? 'disabled' : ''}>${full ? '組み込み済み' : `${price(game, u.id)} G で購入`}</button></article>`;
+new ResizeObserver(resize).observe(game);
+function toggleBody(): void {
+  if(intro)return;
+  if(s.mode==='running'){s.mode='body';selected=null;persist();}
+  else if(s.mode==='body'){s.mode='running';selected=null;accumulator=0;persist();}
+  renderUI(true);
+}
+function mutationButtons(part: Part): string {
+  return MUTATIONS.filter(m=>m.part===part).map(m=>{
+    const owned=s.mutations.includes(m.id),locked=!s.unlocked.includes(m.id),price=cost(s,m.id);
+    return `<button class="mutation ${owned?'owned':''}" data-mutate="${m.id}" ${owned||locked||s.growth<price?'disabled':''}><span class="mutation-title">${m.name}<b>${owned?'変異済み':locked?'拠点で解禁':`◇ ${price}`}</b></span><span class="description">${m.description}</span></button>`;
   }).join('');
-  $('showAll').hidden = showAll || list.length <= 3;
-  document.querySelectorAll<HTMLButtonElement>('.shop-tabs button').forEach(button => button.classList.toggle('selected', button.dataset.group === shopGroup));
 }
-function updateUi(force = false) {
-  $('distance').textContent = number(game.distance);
-  $('velocity').textContent = sign(game.velocity);
-  $('velocity').className = game.velocity < -.3 ? 'negative' : game.velocity > .3 ? 'positive' : '';
-  const ratio = Math.min(1, Math.abs(game.velocity) / 6.5);
-  $('velocityBar').style.width = `${ratio * 50}%`;
-  $('velocityBar').style.left = game.velocity >= 0 ? '50%' : `${50 - ratio * 50}%`;
-  $('velocityBar').classList.toggle('negative', game.velocity < 0);
-  const segment = Math.floor(game.camp / CAMP_INTERVAL);
-  $('trackFill').style.width = `${Math.min(100, (game.distance - game.camp) / CAMP_INTERVAL * 100)}%`;
-  $('trackStart').textContent = `${game.camp}m`;
-  $('trackEnd').textContent = `${(segment + 1) * CAMP_INTERVAL}m 拠点`;
-  $('milestone').textContent = game.pauseReason === 'camp' ? '中継拠点に到達' : `次の拠点まで ${Math.max(0, Math.ceil((segment + 1) * CAMP_INTERVAL - game.distance))}m`;
-  $('chapter').textContent = segment === 0 ? '旧市街 / 坑口' : segment === 1 ? '坑内 / 記録層' : `坑内 / 深度 ${segment + 1}`;
-  $('fieldLabel').textContent = segment === 0 ? '坑口の境界' : segment === 1 ? '記録の残る層' : '未知の坑道';
-  $('crowd').textContent = String(nearbyEnemyCount(game));
-  $('killRate').textContent = format(game.rates.kills);
-  $('damageRate').textContent = format(game.rates.damage);
-  $('recoveryRate').textContent = `回復 ${format(game.rates.recovery)}/秒`;
-  $('incomeRate').textContent = format(game.rates.income);
-  $('observation').textContent = describe(game);
-  $('coins').textContent = number(game.coins);
-  $('best').textContent = `最高 ${number(game.best)}m`;
-  $('event').textContent = game.events[0] || '';
-  $('crewRows').innerHTML = game.allies.map(a => {
-    const person = ROSTER.find(r => r.id === a.id)!;
-    const health = a.status === 'downed' ? `戦闘不能 · ${Math.ceil(a.reviveIn)}秒` : `${Math.ceil(a.hp)}${a.shield > 0 ? ` +${Math.ceil(a.shield)}` : ''}`;
-    return `<div class="crew-row ${a.status === 'downed' ? 'downed' : ''}"><i style="background:${person.color}"></i><span>${person.name}</span><div class="hp"><b style="width:${Math.max(0, 100 * a.hp / a.maxHp)}%;background:${person.color}"></b></div><small>${health}</small></div>`;
-  }).join('');
-  $('liveTag').textContent = game.pauseReason === 'collapse' ? '戦線崩壊' : game.paused ? '一時停止中' : `${game.speed}× 進軍中`;
-  $('liveTag').classList.toggle('running', !game.paused);
-  $('liveTag').classList.toggle('collapsed', game.pauseReason === 'collapse');
-  $('speedButton').textContent = `${game.speed}×`;
-  $('pauseButton').textContent = game.pauseReason === 'collapse' ? '戦線崩壊' : game.paused ? (game.pauseReason === 'start' ? '進軍を始める' : '進軍を再開') : '改造・一時停止';
-  $<HTMLButtonElement>('pauseButton').disabled = game.pauseReason === 'collapse';
-  $('workshop').hidden = !game.paused;
-  if (game.paused && force) {
-    const collapsed = game.pauseReason === 'collapse';
-    $('workshopTitle').textContent = collapsed ? '戦線崩壊' : game.pauseReason === 'camp' ? '中継拠点' : game.pauseReason === 'danger' ? '前線が危険域' : game.pauseReason === 'start' ? '遠征を始める' : '戦闘機械を改造';
-    $('workshopIntro').textContent = game.pauseReason === 'camp'
-      ? 'この地点を保存しました。購入分も含めて再配分できます。準備ができたら、そのまま奥へ進みましょう。'
-      : game.pauseReason === 'danger' ? 'ここで時間は止まっています。手持ちの資金で改造して押し返すか、中継拠点へ戻れます。'
-      : collapsed ? '調査隊が戦闘を継続できません。最後の拠点へ撤退して態勢を立て直してください。'
-      : game.pauseReason === 'start' ? '5人の調査隊が自律して戦います。敵の滞留と被害を観察し、好きなときに止めて改造してください。'
-      : '購入した効果はすぐに反映されます。再開して前線の変化を観察しましょう。';
-    $('collapseNotice').hidden = !collapsed;
-    $('collapseBest').textContent = number(game.best);
-    $('shopTabs').hidden = collapsed;
-    $('shopList').hidden = collapsed;
-    $('showAll').hidden = collapsed || showAll || UPGRADES.filter(u => u.group === shopGroup).length <= 3;
-    $('refund').hidden = collapsed || game.pauseReason !== 'camp';
-    $('retreat').hidden = game.pauseReason === 'start' || game.pauseReason === 'camp';
-    $('resume').hidden = collapsed;
-    $('comparison').hidden = !game.comparison;
-    if (game.comparison) $('comparison').textContent = `直前の改造: ${game.comparison.name}　改造前の進軍 ${sign(game.comparison.velocity)} m/s · 被害 ${format(game.comparison.damage)}/秒。再開後の観測値と比べられます。`;
-    if (!collapsed) updateShop();
-  }
+function renderUI(force=false): void {
+  const signature=[intro,s.mode,selected,s.growth,s.fossils,s.checkpoint,s.mutations.join(),s.unlocked.join()].join('|');
+  if(!force&&lastSignature===signature)return;lastSignature=signature;
+  game.dataset.mode=intro?'title':s.mode;
+  handle.hidden=intro||!['running','body'].includes(s.mode);
+  handle.setAttribute('aria-label',s.mode==='body'?'身体を戻して遠征を再開する':'身体を引き上げて変異する');
+  handle.querySelector('small')!.textContent=s.mode==='body'?'身体を戻して進む':(s.kills<4?'身体を引き上げる':'');
+  if(intro){
+    ui.innerHTML=`<section class="title"><p class="eyebrow">CONTINUOUS EXPEDITION</p><h1>まだ、先へ。</h1><p class="subtitle">古代龍蛇と、ひとりの少女</p><div class="title-mark">✧</div><button class="primary" data-action="start">${saved?'続きから':'START'}<span>↑</span></button>${saved?'<button class="text-button" data-action="reset">はじめから</button>':''}<p class="tiny">眺める。身体を変える。また進む。</p></section>`;
+  }else if(s.mode==='body'){
+    const positions=[.24,.35,.50,.65,.80];
+    ui.innerHTML=`<section class="body-header"><p class="eyebrow">身体変異</p><h2>どんな身体で、進もうか。</h2><div class="resources"><span>成長資源 <b>◇ ${s.growth}</b></span><span>${Math.floor(s.distance)} / ${s.checkpoint+SEGMENT} m</span></div><p class="body-hint">部位を触れて変異する · 下へ戻すと再開</p></section><div class="parts">${PARTS.map((p,i)=>{
+      const owned=MUTATIONS.filter(m=>m.part===p.id&&s.mutations.includes(m.id));
+      return `<button class="part part-${p.id} ${selected===p.id?'selected':''}" style="top:${positions[i]*100}%" data-part="${p.id}"><span class="part-dot"></span><span>${p.name}<small>${owned.length?owned.map(m=>m.name).join('・'):p.note}</small></span><b>＋</b></button>`;
+    }).join('')}</div>${selected?`<section class="choices" aria-label="${PARTS.find(p=>p.id===selected)!.name}の変異"><div class="choice-heading"><h3>${PARTS.find(p=>p.id===selected)!.name}</h3><button aria-label="変異候補を閉じる" data-action="close">×</button></div>${mutationButtons(selected)}<p class="choice-note">変異はこの区間に残る。拠点で身体を組み直す。</p></section>`:''}`;
+  }else if(s.mode==='camp'){
+    const available=MUTATIONS.filter(m=>!s.unlocked.includes(m.id));
+    ui.innerHTML=`<section class="rest"><p class="eyebrow">${s.checkpoint} m · 拠点</p><h2>ひと息ついて、<br>また先へ。</h2><p class="rest-copy">身体を休めて、次の区間へ。<br>次は${s.checkpoint/SEGMENT%3===1?'重い獣の足跡が多い':s.checkpoint/SEGMENT%3===2?'速い獣の足跡が続く':'小さな虫の群れが見える'}。</p>${available.length?`<div class="unlock-heading">遺骨の記憶 <b>✧ ${s.fossils}</b><small>新しい身体のかたちを覚える</small></div><div class="unlocks">${available.map(m=>`<button data-unlock="${m.id}" ${s.fossils<1?'disabled':''}><span>${m.name}</span><small>${m.description}</small><b>解禁 · ✧ 1</b></button>`).join('')}</div>`:'<p class="rest-copy">すべての変異を覚えた。<br>次は、どの組み合わせにしよう。</p>'}<button class="primary" data-action="depart">身体を組み直す <span>↑</span></button><p class="tiny">区間変異と成長資源をリセット · 解禁は残る</p></section>`;
+  }else if(s.mode==='fallen'){
+    ui.innerHTML=`<section class="rest fallen"><p class="eyebrow">前進が止まった</p><h2>少し、戻ろう。</h2><p class="rest-copy">押し寄せる群れに、身体が沈んだ。<br>${s.checkpoint} m の拠点で組み直せる。</p><button class="primary" data-action="depart">拠点で身体を組み直す <span>↺</span></button><p class="tiny">覚えた変異は、そのまま残る</p></section>`;
+  }else ui.innerHTML='';
 }
-
-function resumeExpedition(): void {
-  if (!resume(game)) { save(); updateUi(true); return; }
-  save();
-  updateUi(true);
-  window.scrollTo({ top: 0, behavior: 'smooth' });
-}
-$('pauseButton').addEventListener('click', () => {
-  if (game.paused) resumeExpedition();
-  else {
-    pause(game);
-    save();
-    updateUi(true);
-    $('workshop').scrollIntoView({ behavior: 'smooth', block: 'start' });
-  }
-});
-$('resume').addEventListener('click', resumeExpedition);
-$('speedButton').addEventListener('click', () => { game.speed = game.speed === 1 ? 2 : game.speed === 2 ? 4 : 1; save(); updateUi(true); });
-$('refund').addEventListener('click', () => { if (refundAtCamp(game)) { save(); updateUi(true); } });
-$('retreat').addEventListener('click', () => { if (retreat(game)) { save(); updateUi(true); } });
-$('showAll').addEventListener('click', () => { showAll = true; updateShop(); });
-$('shopList').addEventListener('click', event => {
-  if (!(event.target instanceof Element)) return;
-  const id = event.target.closest<HTMLButtonElement>('[data-buy]')?.dataset.buy;
-  if (id && buy(game, id)) { save(); updateUi(true); }
-});
-document.querySelectorAll<HTMLButtonElement>('.shop-tabs button').forEach(button => button.addEventListener('click', () => {
-  const group = button.dataset.group;
-  if (group === 'structure' || group === 'tuning') shopGroup = group;
-  showAll = false;
-  updateShop();
-}));
-document.addEventListener('visibilitychange', () => { if (document.hidden) { pause(game); save(); } else { lastFrame = 0; accumulator = 0; updateUi(true); } });
-
-window.addEventListener('resize', renderer.resize);
-
-function frame(now: number): void {
-  if (!lastFrame) lastFrame = now;
-  const elapsed = Math.min(.15, (now - lastFrame) / 1000); lastFrame = now;
-  if (!game.paused) {
-    accumulator += elapsed * game.speed;
-    let iterations = 0;
-    while (accumulator >= STEP && iterations++ < 20 && !game.paused) { step(game, STEP); accumulator -= STEP; }
-    if (iterations >= 20) accumulator = 0;
-  } else accumulator = 0;
-  renderer.draw(game);
-  if (now - lastUi > 220 || game.paused && !lastUi) {
-    if (game.paused && $('workshop').hidden) {
-      save();
-      updateUi(true);
-      $('workshop').scrollIntoView({ behavior: 'smooth', block: 'start' });
+ui.addEventListener('click',event=>{
+  const button=(event.target as Element).closest<HTMLButtonElement>('button');if(!button||button.disabled)return;
+  if(button.dataset.part){selected=button.dataset.part as Part;}
+  else if(button.dataset.mutate){if(mutate(s,button.dataset.mutate as MutationId))persist();}
+  else if(button.dataset.unlock){if(unlock(s,button.dataset.unlock as MutationId))persist();}
+  else switch(button.dataset.action){
+    case 'start':intro=false;if(s.mode==='title')start(s);else if(s.mode==='body')s.mode='running';persist();break;
+    case 'close':selected=null;break;
+    case 'depart':depart(s);selected=null;persist();break;
+    case 'reset':{
+      const dialog=document.createElement('dialog');dialog.className='reset-dialog';dialog.innerHTML='<h2>はじめから進む？</h2><p>この端末の進行と解禁を消して、新しい遠征を始めます。</p><form method="dialog"><button value="cancel">戻る</button><button value="reset">はじめから</button></form>';
+      game.append(dialog);dialog.addEventListener('close',()=>{if(dialog.returnValue==='reset'){s=createState();saved=null;persist();renderUI(true);}dialog.remove();});dialog.showModal();break;
     }
-    else updateUi(false);
-    lastUi = now;
   }
-  if (now - lastSave > 5000) { save(); lastSave = now; }
+  renderUI(true);
+});
+handle.addEventListener('click',()=>{if(!suppressClick)toggleBody();});
+let pointer: {x:number;y:number;active:boolean;id:number}|null=null,suppressClick=false;
+game.addEventListener('pointerdown',event=>{
+  const target=event.target as Element;
+  if(target.closest('#ui,dialog'))return;
+  const rect=game.getBoundingClientRect(), y=(event.clientY-rect.top)/rect.height;
+  pointer={x:event.clientX,y:event.clientY,active:!intro&&(s.mode==='body'||s.mode==='running'&&y>.73),id:event.pointerId};
+  suppressClick=false;
+});
+game.addEventListener('pointerup',event=>{
+  if(!pointer||pointer.id!==event.pointerId)return;
+  const dy=event.clientY-pointer.y,dx=event.clientX-pointer.x;
+  if(pointer.active&&Math.abs(dy)>40&&Math.abs(dy)>Math.abs(dx)){
+    if(s.mode==='running'&&dy<0||s.mode==='body'&&dy>0){suppressClick=true;toggleBody();setTimeout(()=>{suppressClick=false;},150);}
+  }else if(pointer.active&&Math.abs(dy)<10&&event.target===canvas&&s.mode==='running')toggleBody();
+  pointer=null;
+});
+game.addEventListener('pointercancel',()=>{pointer=null;});
+document.addEventListener('keydown',event=>{if((event.code==='Space'||event.code==='Escape')&&!(event.target instanceof HTMLButtonElement)&&!document.querySelector('dialog[open]')){event.preventDefault();if(selected&&event.code==='Escape'){selected=null;renderUI(true);}else toggleBody();}});
+document.addEventListener('visibilitychange',()=>{if(document.hidden){if(s.mode==='running'){s.mode='body';selected=null;}accumulator=0;persist();renderUI(true);}});
+window.addEventListener('pagehide',persist);
+function frame(now: number): void {
+  const dt=last?Math.min(.1,(now-last)/1000):0;last=now;idle+=dt;
+  if(!intro&&s.mode==='running'&&!document.hidden&&reveal<.03){accumulator+=dt;while(accumulator>=1/60){step(s,1/60);accumulator-=1/60;if(s.mode!=='running'){accumulator=0;persist();break;}}}else accumulator=0;
+  const target=!intro&&s.mode==='body'?1:0;reveal+=(target-reveal)*Math.min(1,dt*9);
+  // Resume only after the body has settled back into the battlefield.
+  if(reveal>.02&&target===0&&s.mode==='running')accumulator=0;
+  draw(ctx,s,{height,reveal,idle});renderUI();
+  saveClock+=dt;if(saveClock>=3&&!intro){persist();saveClock=0;}
+  if(noticeTimer>0){noticeTimer-=dt;if(noticeTimer<=0)notice.classList.remove('show');}
   requestAnimationFrame(frame);
 }
-renderer.resize(); updateUi(true); requestAnimationFrame(frame);
+resize();renderUI(true);requestAnimationFrame(frame);
