@@ -114,6 +114,9 @@ function hornArt(mutations: MutationId[]): string {
 
 export function drawBody(c: CanvasRenderingContext2D): void {
   paint(c, 'body', body, -280, 20, 560, 940);
+}
+
+export function drawHead(c: CanvasRenderingContext2D): void {
   paint(c, 'face', face, -255, -40, 510, 210);
 }
 

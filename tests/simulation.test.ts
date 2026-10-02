@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { advance, collide, cost, createState, depart, mutate, spawnEnemy, start, step, unlock } from '../src/simulation.ts';
 import { decode, encode } from '../src/save.ts';
-import { hornShapes, jawShape, organTip, shapeContact } from '../src/body-physics.ts';
+import { headMotion, headPoint, headVelocity, hornShapes, jawShape, organOrigin, organTip, shapeContact, sweepPeriod } from '../src/body-physics.ts';
 import { MAX_HEALTH, MUTATIONS } from '../src/content.ts';
 import type { MutationId } from '../src/types.ts';
 function running(){const s=createState();start(s);return s;}
@@ -131,4 +131,30 @@ test('extra tentacles are distinct material arms with at most one capture per ar
   // A cast reserves its target so two physical arms cannot aim for the same body.
   assert.equal(new Set(arms.map(f=>f.targetId)).size,4);
   s.mode='body';const before=JSON.stringify(s.effects);advance(s,10);assert.equal(JSON.stringify(s.effects),before);
+});
+
+
+test('horn roots, eyes and jaw keep their relative attachment distances as the neck turns the whole skull',()=>{
+  const s=running();s.mutations=['heavy-horn'];
+  const landmarks=[{x:-133,y:76},{x:133,y:76},{x:-168,y:69},{x:168,y:69},{x:0,y:0}];
+  for(const fraction of [.25,.5,.75,1]) {
+    s.sweep=sweepPeriod(s.mutations)*fraction;
+    const world=landmarks.map(p=>headPoint(s,p));
+    for(let i=0;i<landmarks.length;i++)for(let j=i+1;j<landmarks.length;j++) {
+      assert(Math.abs(Math.hypot(world[i].x-world[j].x,world[i].y-world[j].y)-Math.hypot(landmarks[i].x-landmarks[j].x,landmarks[i].y-landmarks[j].y))<1e-9);
+    }
+    const tongue=organOrigin({type:'pull',source:'tongue',x:0,y:0,life:1,maxLife:1},s);
+    assert.deepEqual(tongue,headPoint(s,{x:0,y:12}));
+  }
+  s.sweep=sweepPeriod(s.mutations);
+  const left=headVelocity(s,headPoint(s,landmarks[0])),right=headVelocity(s,headPoint(s,landmarks[1]));
+  assert(left.y<0&&right.y>0);assert.equal(left.x,right.x);
+  s.mode='body';const pose=headMotion(s);advance(s,2);assert.deepEqual(headMotion(s),pose);
+});
+test('jaw collision turns with the visible skull rather than staying at its old screen position',()=>{
+  const s=running();s.mutations=['wide-jaw'];s.bite=0;s.sweep=sweepPeriod(s.mutations)*.75;
+  const p={x:144,y:-24};assert(!shapeContact(p,8,jawShape(s.mutations)));
+  assert(shapeContact(p,8,jawShape(s.mutations).map(v=>headPoint(s,v))));
+  const e=spawnEnemy(s,'beetle',p.x,-p.y/4);step(s,.01);
+  assert(s.effects.some(f=>f.type==='bite'&&f.targetId===e.id));
 });

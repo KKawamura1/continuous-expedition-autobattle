@@ -1,11 +1,11 @@
 import { WORLD_SCALE, has } from './content';
 import type { Enemy, State } from './types';
-import { drawBody, drawHorns, drawJaw } from './creature-art';
+import { drawBody, drawHead, drawHorns, drawJaw } from './creature-art';
 import { drawGirl } from './girl-art';
 import { drawSand } from './terrain-art';
 import { battleHead, bodyOffset } from './body-layout';
 import { battleEffects, enemyHealth, newest } from './battle-feedback';
-import { hornMotion, jawWidth, skinEdge } from './body-physics';
+import { headMotion, NECK_PIVOT, jawWidth, skinEdge } from './body-physics';
 const INK = '#263a3b', BONE = '#dfd8b6';
 function poly(c: CanvasRenderingContext2D, points: number[][], fill: string, stroke = INK, width = 2): void {
   c.beginPath(); points.forEach(([x,y], i) => i ? c.lineTo(x,y) : c.moveTo(x,y)); c.closePath();
@@ -153,6 +153,9 @@ function creature(c: CanvasRenderingContext2D, s: State, head: number, h: number
     }
     c.restore();
   }
+  // The neck is the pivot. Every feature mounted on the skull shares this rigid pose.
+  c.save(); c.translate(NECK_PIVOT.x, NECK_PIVOT.y); c.rotate(headMotion(s).angle); c.translate(-NECK_PIVOT.x, -NECK_PIVOT.y);
+  drawHead(c);
   if (opening>0) oval(c, 0, 11, has(m, 'wide-jaw') ? 112 : 86, 9+opening*.65, '#11262f');
   drawJaw(c, m, reducedMotion ? 0 : opening);
   // Material plates at the actual collision edge, plus the same additions down the flank.
@@ -178,7 +181,8 @@ function creature(c: CanvasRenderingContext2D, s: State, head: number, h: number
     c.beginPath(); c.moveTo(-4, 17); c.bezierCurveTo(-8, 31, 13, 41, 14, 23);
     c.strokeStyle = '#2d3a3c'; c.lineWidth = 6; c.stroke(); c.strokeStyle = '#b16f62'; c.lineWidth = 3; c.stroke();
   }
-  c.save(); c.translate(hornMotion(s).x, 0); drawHorns(c, m); c.restore();
+  drawHorns(c, m);
+  c.restore();
   drawGirl(c, s, 123, idle);
   if (s.reactionTime > 0) {
     c.font = '600 11px system-ui, sans-serif';

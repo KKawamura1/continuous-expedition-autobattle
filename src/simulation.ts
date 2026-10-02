@@ -1,5 +1,5 @@
 import { ENEMIES, INITIAL_UNLOCKS, MAX_HEALTH, MUTATIONS, SEGMENT, WORLD_SCALE, has } from './content';
-import { hornMotion, hornShapes, jawShape, organRestTip, shapeContact, skinEdge, sweepPeriod } from './body-physics';
+import { headMotion, headPoint, headVelocity, hornShapes, jawShape, organRestTip, shapeContact, skinShape, sweepPeriod } from './body-physics';
 import type { Effect, Enemy, EnemyKind, MutationId, State } from './types';
 export const clamp = (n: number, a: number, b: number) => Math.max(a, Math.min(b, n));
 export function createState(): State {
@@ -73,8 +73,8 @@ export function collide(a: Enemy, b: Enemy): number {
 function operateOrgans(s: State, dt: number): void {
   const m = s.mutations;
   const cast = (source: MutationId, side: number, reach: number, bundle = false) => {
-    if (s.effects.some(f => f.type === 'pull' && f.source === source && Math.sign(f.x) === side)) return;
-    const origin = source === 'tongue' ? { x: 0, y: 12 } : { x: side * (bundle ? 105 : 88), y: 125 };
+    if (s.effects.some(f => f.type === 'pull' && f.source === source && (source === 'tongue' || Math.sign(f.x) === side))) return;
+    const origin = source === 'tongue' ? headPoint(s, { x: 0, y: 12 }) : { x: side * (bundle ? 105 : 88), y: 125 };
     const target = s.enemies.filter(e => e.hp > 0 && !s.effects.some(f => f.type === 'pull' && f.targetId === e.id) &&
       (source === 'tongue' ? Math.abs(e.x) < 90 : Math.sign(e.x) === side && Math.abs(e.x) > 60) &&
       e.y - s.distance > 10 && Math.hypot(e.x - origin.x, -(e.y - s.distance) * WORLD_SCALE - origin.y) < reach)
@@ -114,45 +114,50 @@ export function step(s: State, dt: number): void {
   const jawReady = s.bite <= 0;
   if (jawReady) s.bite = has(m, 'crusher') ? 1.26 : 1.05;
   if (s.sweep <= 0) s.sweep += sweepPeriod(m);
-  const horns = hornShapes(m), motion = hornMotion(s), jaw = jawShape(m);
+  const pose = headMotion(s), forward = { x: Math.sin(pose.angle), y: -Math.cos(pose.angle) };
+  const horns = hornShapes(m).map(shape => shape.map(p => headPoint(s, p)));
+  const jaw = jawShape(m).map(p => headPoint(s, p)), skin = skinShape(m).map(p => headPoint(s, p));
   operateOrgans(s, dt);
   let touching = 0;
   for (const e of s.enemies) {
     e.flash = Math.max(0, e.flash - dt); e.hpTime = Math.max(0, e.hpTime - dt); e.collisionCooldown -= dt;
     const ahead = e.y - s.distance;
-    const contactY = s.distance - skinEdge(e.x, m) / WORLD_SCALE + e.radius / WORLD_SCALE;
-    const touchingBody = e.y <= contactY + .8;
+    const touchingBody = !!shapeContact({ x: e.x, y: -ahead * WORLD_SCALE }, e.radius + 3.2, skin);
     e.vy += (-e.speed - e.vy) * dt * (has(m, 'hook-scale') && touchingBody ? .35 : 1.7);
     e.vx *= Math.exp(-dt * (has(m, 'hook-scale') && touchingBody ? 8 : 2));
     if (jawReady && shapeContact({ x: e.x, y: -ahead * WORLD_SCALE }, e.radius, jaw)) {
-      const closing = Math.max(0, s.speed - e.vy);
+      const mouthVelocity = headVelocity(s, headPoint(s, { x: 0, y: 0 }));
+      const closing = Math.max(0, -((e.vx - mouthVelocity.x) * forward.x + (-(e.vy - s.speed) * WORLD_SCALE - mouthVelocity.y) * forward.y) / WORLD_SCALE);
       const amount = (has(m, 'wide-jaw') ? 29 : 39) + (has(m, 'spring-jaw') ? closing * 2.4 : 0) + (has(m, 'crusher') ? 20 : 0);
       damage(e, amount);
-      effect(s, 'bite', e.x, e.y, .38, e, { strength: amount, source: has(m, 'spring-jaw') ? 'spring-jaw' : has(m, 'crusher') ? 'crusher' : undefined }); e.vy += 8 / e.mass;
+      effect(s, 'bite', e.x, e.y, .38, e, { strength: amount, source: has(m, 'spring-jaw') ? 'spring-jaw' : has(m, 'crusher') ? 'crusher' : undefined }); e.vx += forward.x * 8 * WORLD_SCALE / e.mass; e.vy -= forward.y * 8 / e.mass;
     }
-    const previousVy = e.vy;
     e.x = clamp(e.x + e.vx * dt, -187, 187); e.y += e.vy * dt;
     // Visible horn surfaces redirect momentum only after material contact.
     for (const shape of horns) {
-      const hit = shapeContact({ x: e.x - motion.x, y: -(e.y - s.distance) * WORLD_SCALE }, e.radius, shape);
+      const hit = shapeContact({ x: e.x, y: -(e.y - s.distance) * WORLD_SCALE }, e.radius, shape);
       if (!hit) continue;
       e.x += hit.nx * hit.depth; e.y -= hit.ny * hit.depth / WORLD_SCALE;
-      const closing = Math.max(0, -((e.vx - motion.vx) * hit.nx - (e.vy - s.speed) * WORLD_SCALE * hit.ny));
+      const velocity = headVelocity(s, hit);
+      const closing = Math.max(0, -((e.vx - velocity.x) * hit.nx + (-(e.vy - s.speed) * WORLD_SCALE - velocity.y) * hit.ny));
       // A little restitution and a mass-dependent impact; tangential velocity is retained.
       const push = closing * (1 + .16 * heavy / e.mass);
       e.vx += hit.nx * push; e.vy -= hit.ny * push / WORLD_SCALE;
       if (closing > 8 && !s.effects.some(f => f.type === 'sweep' && f.targetId === e.id)) {
         const amount = Math.min(65, (9 + closing * .16) * heavy * (has(m, 'ram-horn') ? 1.4 : 1));
         damage(e, amount);
-        effect(s, 'sweep', hit.x + motion.x, s.distance - hit.y / WORLD_SCALE, .32, e, { strength: heavy, source: has(m, 'ram-horn') ? 'ram-horn' : has(m, 'heavy-horn') ? 'heavy-horn' : has(m, 'crown') ? 'crown' : has(m, 'branch') ? 'branch' : has(m, 'curl') ? 'curl' : undefined });
+        effect(s, 'sweep', hit.x, s.distance - hit.y / WORLD_SCALE, .32, e, { strength: heavy, source: has(m, 'ram-horn') ? 'ram-horn' : has(m, 'heavy-horn') ? 'heavy-horn' : has(m, 'crown') ? 'crown' : has(m, 'branch') ? 'branch' : has(m, 'curl') ? 'curl' : undefined });
       }
     }
     e.x = clamp(e.x, -187, 187);
-    // Recompute after sliding along the horns, since the skin edge is curved.
-    const skinY = s.distance - skinEdge(e.x, m) / WORLD_SCALE + e.radius / WORLD_SCALE;
-    if (e.y < skinY) {
-      const impactSpeed = Math.max(0, s.speed - previousVy);
-      e.y = skinY; e.contact += dt; e.vy = Math.max(e.vy, s.speed);
+    // The front skin rotates with the skull as well, including its contact normal.
+    const skinHit = shapeContact({ x: e.x, y: -(e.y - s.distance) * WORLD_SCALE }, e.radius, skin);
+    if (skinHit) {
+      const velocity = headVelocity(s, skinHit);
+      const closing = Math.max(0, -((e.vx - velocity.x) * skinHit.nx + (-(e.vy - s.speed) * WORLD_SCALE - velocity.y) * skinHit.ny));
+      const impactSpeed = closing / WORLD_SCALE;
+      e.x += skinHit.nx * skinHit.depth; e.y -= skinHit.ny * skinHit.depth / WORLD_SCALE;
+      e.vx += skinHit.nx * closing; e.vy -= skinHit.ny * closing / WORLD_SCALE; e.contact += dt;
       touching += e.mass; s.health -= e.mass * dt * .8;
       if (has(m, 'thorn')) {
         damage(e, dt * (2 + Math.abs(e.vx) * .19 + impactSpeed * .9) * (has(m, 'razor-scale') ? 1.8 : 1));
@@ -163,9 +168,11 @@ export function step(s: State, dt: number): void {
         if (!s.effects.some(f => f.type === 'hook' && f.targetId === e.id)) effect(s, 'hook', e.x, e.y, .45, e, { source: 'hook-scale' });
       }
       if (has(m, 'elastic-scale') && impactSpeed > 4 && e.collisionCooldown <= 0) {
-        e.vy = s.speed + impactSpeed * (has(m, 'rebound-scale') ? 1.25 : .8); damage(e, impactSpeed * .8 * (has(m, 'rebound-scale') ? 1.5 : 1)); e.collisionCooldown = .3; effect(s, 'rebound', e.x, e.y, .4, e, { source: 'elastic-scale', dx: e.vx, dy: e.vy });
+        const bounce = closing * (has(m, 'rebound-scale') ? 1.25 : .8);
+        e.vx += skinHit.nx * bounce; e.vy -= skinHit.ny * bounce / WORLD_SCALE; damage(e, impactSpeed * .8 * (has(m, 'rebound-scale') ? 1.5 : 1)); e.collisionCooldown = .3; effect(s, 'rebound', e.x, e.y, .4, e, { source: 'elastic-scale', dx: e.vx, dy: e.vy });
       }
     } else e.contact = 0;
+    e.x = clamp(e.x, -187, 187);
   }
   const grid = new Map<string, Enemy[]>();
   for (const e of s.enemies) {

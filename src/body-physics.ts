@@ -8,11 +8,27 @@ export function sweepPeriod(m: MutationId[]): number {
   return (has(m, 'fast') ? .62 : 1.15) * (has(m, 'heavy-horn') ? 1.28 : 1) *
     (has(m, 'heavy-neck') ? 1.2 : 1) * (has(m, 'ram-horn') ? 1.1 : 1) * (has(m, 'rapid-neck') ? .72 : 1);
 }
-export function hornMotion(s: State): { x: number; vx: number } {
-  if (s.sweep > sweepPeriod(s.mutations)) return { x: 0, vx: 0 };
-  const phase = Math.max(0, 1 - s.sweep / sweepPeriod(s.mutations)) * Math.PI * 2;
-  const amplitude = has(s.mutations, 'heavy-neck') ? 9 : 16;
-  return { x: Math.sin(phase) * amplitude, vx: Math.cos(phase) * amplitude * Math.PI * 2 / sweepPeriod(s.mutations) };
+export const NECK_PIVOT: Point = { x: 0, y: 140 };
+/** Both horns, the eyes, jaw and front scales are rigid parts of one head. */
+export function headMotion(s: State): { angle: number; omega: number } {
+  const period = sweepPeriod(s.mutations);
+  if (s.sweep > period) return { angle: 0, omega: 0 };
+  const phase = Math.max(0, 1 - s.sweep / period) * Math.PI * 2;
+  const amplitude = has(s.mutations, 'heavy-neck') ? .045 : .075;
+  return { angle: Math.sin(phase) * amplitude, omega: Math.cos(phase) * amplitude * Math.PI * 2 / period };
+}
+export function headPoint(s: State, p: Point): Point {
+  const { angle } = headMotion(s), cos = Math.cos(angle), sin = Math.sin(angle), y = p.y - NECK_PIVOT.y;
+  return { x: p.x * cos - y * sin, y: NECK_PIVOT.y + p.x * sin + y * cos };
+}
+/** Pixel velocity of a point fixed to the rotating head, relative to forward travel. */
+export function headVelocity(s: State, p: Point): Point {
+  const { omega } = headMotion(s);
+  return { x: -(p.y - NECK_PIVOT.y) * omega, y: p.x * omega };
+}
+export function skinShape(m: MutationId[]): Point[] {
+  const front = Array.from({ length: 24 }, (_, i) => { const x = -230 + i * 20; return { x, y: skinEdge(x, m) }; });
+  return [...front, { x: 230, y: 170 }, { x: -230, y: 170 }];
 }
 /** The exposed diagonal faces funnel incoming bodies toward the mouth. Same polygons in art and collision. */
 export function hornShapes(m: MutationId[]): Point[][] {
@@ -53,12 +69,12 @@ export function shapeContact(p: Point, radius: number, shape: Point[]): Contact 
   else { const length = Math.hypot(edge.x, edge.y); nx = edge.y / length * Math.sign(area); ny = -edge.x / length * Math.sign(area); }
   return { ...hit, nx, ny, depth: inside ? radius + best : radius - best };
 }
-export function organOrigin(f: Effect): Point {
-  return f.source === 'tongue' ? { x: 0, y: 12 } : { x: Math.sign(f.x) * (f.strength === 2 ? 105 : 88), y: 125 };
+export function organOrigin(f: Effect, s: State): Point {
+  return f.source === 'tongue' ? headPoint(s, { x: 0, y: 12 }) : { x: Math.sign(f.x) * (f.strength === 2 ? 105 : 88), y: 125 };
 }
 /** A material tip extends to its aimed position, then retracts; no remote force during extension. */
 export function organRestTip(f: Effect, s: State): Point {
-  const origin = organOrigin(f), age = f.maxLife - f.life;
+  const origin = organOrigin(f, s), age = f.maxLife - f.life;
   const reach = age < .3 ? age / .3 : age < .48 ? 1 : Math.max(0, (f.maxLife - age) / (f.maxLife - .48));
   return { x: origin.x + ((f.targetX ?? 0) - origin.x) * reach,
     y: origin.y + (-( (f.targetY ?? s.distance) - s.distance) * WORLD_SCALE - origin.y) * reach };
