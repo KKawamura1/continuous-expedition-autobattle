@@ -1,19 +1,28 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { buy, createGame, pause, refundAtCamp, resume, retreat, step, CAMP_INTERVAL, DOWNED_RETREAT_DISTANCE, ENEMY_ATTACK_RANGE, ENEMY_NOTICE_RANGE, INJURY_RETREAT_DISTANCE, MAX_RANGE_RETREAT_SPEED, MAX_SQUAD_RETREAT_SPEED, NAGI_GUARD_RADIUS, PASSIVE_RECOVERY_PER_SECOND, RECOVERY_SECONDS, RETREAT_DECAY_RATE, RETREAT_RISE_RATE, REVIVE_HP_RATIO, STEP, UNALERTED_ENEMY_SPEED_RATIO, calculateFrontline, updateFrontline, generateAhead, WORLD_ORIGIN_Y, METRES_PER_UNIT, CAMERA_FRONT_Y } from '../src/simulation.ts';
+import { buy, createGame, pause, refundAtCamp, resume, retreat, step, CAMP_INTERVAL, DOWNED_RETREAT_DISTANCE, ENEMY_ATTACK_RANGE, ENEMY_NOTICE_RANGE, ENEMY_KIND_SHARES, INJURY_RETREAT_DISTANCE, MAX_RANGE_RETREAT_SPEED, MAX_SQUAD_RETREAT_SPEED, NAGI_GUARD_RADIUS, PASSIVE_RECOVERY_PER_SECOND, RECOVERY_SECONDS, RETREAT_DECAY_RATE, RETREAT_RISE_RATE, REVIVE_HP, SPAWN_LEAD_UNITS, STEP, UNALERTED_ENEMY_SPEED_RATIO, advanceEncounterField, calculateFrontline, enemyDensity, updateFrontline, WORLD_ORIGIN_Y, METRES_PER_UNIT, CAMERA_FRONT_Y } from '../src/simulation.ts';
 import { decodeSave, encodeSave, validateSave } from '../src/save.ts';
 import type { AllyState, EnemyState, GameState } from '../src/types.ts';
+import { ENEMY_KINDS } from '../src/content.ts';
+
+const ENEMY_KIND_IDS = ['stray', 'runner', 'heavy', 'swarm'] as const;
+
+function disableSpawning(s: GameState): void {
+  s.enemies = [];
+  for (const id of ENEMY_KIND_IDS) s.nextSpawnExposure[id] = Number.MAX_VALUE / 4;
+}
 
 function run(s: GameState, seconds: number): void {
   for (let i = 0; i < Math.round(seconds / STEP) && !s.paused; i++) step(s, STEP);
 }
 
-function runUntilCamp(s: GameState, seconds: number): void {
+function runAutonomously(s: GameState, seconds: number): void {
   for (let i = 0; i < Math.round(seconds / STEP); i++) {
-    if (s.pauseReason === 'danger') resume(s);
-    if (s.paused) return;
+    if (s.paused) {
+      if (s.pauseReason === 'danger' || s.pauseReason === 'camp') resume(s);
+      else return;
+    }
     step(s, STEP);
-    if (s.pauseReason === 'camp' || s.pauseReason === 'collapse') return;
   }
 }
 
@@ -39,29 +48,33 @@ function down(ally: AllyState, reviveIn = RECOVERY_SECONDS): void {
   ally.shield = 0;
 }
 
-test('the squad reaches its first camp and upgrades help handle the denser next region', () => {
+test('an early damage package offsets the doubled encounter pressure', () => {
   const baseline = createGame(194);
-  resume(baseline); runUntilCamp(baseline, 300);
-  assert.equal(baseline.pauseReason, 'camp');
-  assert.ok(baseline.distance >= CAMP_INTERVAL && baseline.distance < CAMP_INTERVAL + 1);
+  resume(baseline); runAutonomously(baseline, 600);
 
   const modified = createGame(194);
-  resume(modified); run(modified, 45);
-  const before = modified.coins;
-  pause(modified);
+  modified.coins = 500;
   assert.equal(buy(modified, 'cleave'), true);
-  assert.ok(modified.coins < before);
-  resume(modified); runUntilCamp(modified, 300);
-  assert.equal(modified.pauseReason, 'camp');
-  assert.ok(modified.distance >= CAMP_INTERVAL && modified.distance < CAMP_INTERVAL + 1);
+  assert.equal(buy(modified, 'counter'), true);
+  resume(modified); runAutonomously(modified, 600);
+  assert.ok(modified.best > baseline.best + 30,
+    'focused early upgrades increase peak distance under the higher inflow');
+});
 
-  const defensive = createGame(194);
-  resume(defensive); run(defensive, 45); pause(defensive);
-  assert.equal(buy(defensive, 'counter'), true);
-  assert.equal(buy(defensive, 'barrier'), true);
-  resume(defensive); runUntilCamp(defensive, 300);
-  assert.equal(defensive.pauseReason, 'camp');
-  assert.equal(defensive.upgrades.counter, 1);
+test('an early damage package extends progress across several seeds', () => {
+  for (const seed of [1, 2, 3]) {
+    const baseline = createGame(seed);
+    resume(baseline); runAutonomously(baseline, 600);
+
+    const upgraded = createGame(seed);
+    upgraded.coins = 1000;
+    for (const id of ['cleave', 'chain', 'arc', 'rapid', 'rapid']) {
+      assert.equal(buy(upgraded, id), true, `seed ${seed} can purchase the early ${id} package`);
+    }
+    resume(upgraded); runAutonomously(upgraded, 600);
+    assert.ok(upgraded.best > baseline.best + 70,
+      `seed ${seed}: the damage package extends peak distance by more than 70m`);
+  }
 });
 
 test('a purchase requires pause and refunds only at a reached camp', () => {
@@ -118,7 +131,7 @@ test('resuming from danger continues through the same danger episode', () => {
   s.distance = 66;
   s.best = 66;
   s.peakSinceCamp = 66;
-  s.generatedTo = -1e6;
+  disableSpawning(s);
   const exposed = s.allies.find(ally => ally.id === 'hibana')!;
   exposed.hp = 1;
   s.enemies = [staticEnemy(exposed.x, exposed.y - .09, 10, 0)];
@@ -135,7 +148,7 @@ test('resuming from danger continues through the same danger episode', () => {
 
   // Keep this acknowledgement test focused on the pause state, without the old run's crowded front.
   loaded.enemies = [];
-  loaded.generatedTo = -1e6;
+  disableSpawning(loaded);
   setProgress(loaded, loaded.camp + 10);
   loaded.best = loaded.camp + 100;
   loaded.velocity = 0;
@@ -180,7 +193,7 @@ test('save validation restores enemy kinds from earlier saves and rejects broken
 
 test('allies move toward targets while close range preferences hold formation', () => {
   const moving = createGame();
-  moving.generatedTo = -1e6;
+  disableSpawning(moving);
   moving.enemies = [staticEnemy(.88, .48)];
   resume(moving);
   run(moving, 2);
@@ -197,7 +210,7 @@ test('allies move toward targets while close range preferences hold formation', 
   }
 
   const holding = createGame();
-  holding.generatedTo = -1e6;
+  disableSpawning(holding);
   holding.enemies = [staticEnemy(.42, .54)];
   const holdingGou = holding.allies.find(ally => ally.id === 'gou')!;
   holdingGou.y = .69;
@@ -214,7 +227,7 @@ test('frontliners keep their ground near an enemy while a downed teammate slowly
   const recovering = createGame();
   const wounded = createGame();
   for (const s of [steady, recovering, wounded]) {
-    s.generatedTo = -1e6;
+    disableSpawning(s);
     s.enemies = [staticEnemy(.05, .53, 0, 100)];
     const gou = s.allies.find(ally => ally.id === 'gou')!;
     gou.x = .05;
@@ -227,7 +240,7 @@ test('frontliners keep their ground near an enemy while a downed teammate slowly
   }
   down(recovering.allies.find(ally => ally.id === 'nagi')!, 20);
   const woundedGou = wounded.allies.find(ally => ally.id === 'gou')!;
-  woundedGou.hp = woundedGou.maxHp * REVIVE_HP_RATIO;
+  woundedGou.hp = REVIVE_HP;
   resume(steady); resume(recovering); resume(wounded);
   run(steady, .25); run(recovering, .25); run(wounded, .25);
 
@@ -244,7 +257,7 @@ test('frontliners keep their ground near an enemy while a downed teammate slowly
 
 test('actual time-based recovery offsets damage and affects front movement', () => {
   const recovering = createGame();
-  recovering.generatedTo = -1e6;
+  disableSpawning(recovering);
   const wounded = recovering.allies.find(ally => ally.id === 'gou')!;
   wounded.hp = 50;
   resume(recovering);
@@ -257,7 +270,7 @@ test('actual time-based recovery offsets damage and affects front movement', () 
   assert.equal(PASSIVE_RECOVERY_PER_SECOND, .45);
 
   const pressured = createGame();
-  pressured.generatedTo = -1e6;
+  disableSpawning(pressured);
   pressured.enemies = [staticEnemy(.42, .72, 30, 0)];
   const gou = pressured.allies.find(ally => ally.id === 'gou')!;
   for (const ally of pressured.allies) if (ally.id !== 'gou') down(ally, 100);
@@ -270,7 +283,7 @@ test('actual time-based recovery offsets damage and affects front movement', () 
   const nonlethalPressure = createGame();
   const sameBalanceWithKills = createGame();
   for (const state of [nonlethalPressure, sameBalanceWithKills]) {
-    state.generatedTo = -1e6;
+    disableSpawning(state);
     state.rates = { kills: 0, damage: 2, recovery: .5, income: 0 };
     resume(state);
   }
@@ -279,14 +292,14 @@ test('actual time-based recovery offsets damage and affects front movement', () 
   assert.equal(sameBalanceWithKills.velocity, nonlethalPressure.velocity, 'kills do not directly affect front speed');
 
   const sustainedLoss = createGame();
-  sustainedLoss.generatedTo = -1e6;
+  disableSpawning(sustainedLoss);
   sustainedLoss.rates = { kills: 10, damage: 20, recovery: 0, income: 0 };
   resume(sustainedLoss);
   run(sustainedLoss, 2.1);
   assert.ok(sustainedLoss.velocity < 0, 'sustained net loss turns the front backward');
 
   const safeAdvance = createGame();
-  safeAdvance.generatedTo = -1e6;
+  disableSpawning(safeAdvance);
   resume(safeAdvance);
   step(safeAdvance, STEP);
   assert.ok(safeAdvance.velocity > 0, 'the squad advances while it takes no damage');
@@ -294,7 +307,7 @@ test('actual time-based recovery offsets damage and affects front movement', () 
 
 test('enemies attack only allies in range and Nagi guards only a nearby front-side ally', () => {
   const s = createGame();
-  s.generatedTo = -1e6;
+  disableSpawning(s);
   s.enemies = [staticEnemy(.42, .72, 10, 0)];
   const gou = s.allies.find(ally => ally.id === 'gou')!;
   for (const ally of s.allies) if (ally.id !== 'gou') down(ally, 100);
@@ -339,7 +352,7 @@ test('enemies attack only allies in range and Nagi guards only a nearby front-si
 
 test('a downed ally cannot attack and returns after the recovery timer', () => {
   const s = createGame();
-  s.generatedTo = -1e6;
+  disableSpawning(s);
   s.enemies = [staticEnemy(.52, .48)];
   const gou = s.allies.find(ally => ally.id === 'gou')!;
   down(gou, 50);
@@ -350,7 +363,7 @@ test('a downed ally cannot attack and returns after the recovery timer', () => {
   assert.equal(s.enemies[0].hp, enemyHp);
 
   const recovery = createGame();
-  recovery.generatedTo = -1e6;
+  disableSpawning(recovery);
   const recovering = recovery.allies.find(ally => ally.id === 'hibana')!;
   down(recovering);
   resume(recovery);
@@ -360,12 +373,12 @@ test('a downed ally cannot attack and returns after the recovery timer', () => {
   run(recovery, .3);
   assert.equal(recovering.status, 'active');
   assert.equal(recovering.reviveIn, 0);
-  assert.ok(recovering.hp >= recovering.maxHp * REVIVE_HP_RATIO);
-  assert.ok(recovering.hp < recovering.maxHp * (REVIVE_HP_RATIO + .01));
+  assert.ok(recovering.hp >= REVIVE_HP);
+  assert.ok(recovering.hp < REVIVE_HP + PASSIVE_RECOVERY_PER_SECOND * .5);
   assert.ok(recovering.y > Math.min(...recovery.allies.filter(a => a !== recovering).map(a => a.y)), 'a returning teammate enters behind the active squad');
 
   const holdingFront = createGame();
-  holdingFront.generatedTo = -1e6;
+  disableSpawning(holdingFront);
   holdingFront.enemies = [
     staticEnemy(.37, .72, 3, 0), staticEnemy(.47, .72, 3, .2), staticEnemy(.57, .72, 3, .4),
     staticEnemy(.67, .72, 3, .6), staticEnemy(.77, .72, 3, .8)
@@ -375,14 +388,14 @@ test('a downed ally cannot attack and returns after the recovery timer', () => {
   resume(holdingFront);
   run(holdingFront, RECOVERY_SECONDS + .2);
   assert.equal(returning.status, 'active', 'the remaining four should hold the line until a teammate returns');
-  assert.ok(returning.hp >= returning.maxHp * REVIVE_HP_RATIO);
-  assert.ok(returning.hp < returning.maxHp * (REVIVE_HP_RATIO + .01));
+  assert.ok(returning.hp >= REVIVE_HP);
+  assert.ok(returning.hp < REVIVE_HP + PASSIVE_RECOVERY_PER_SECOND * .5);
   assert.ok(holdingFront.allies.filter(ally => ally.status === 'active').length >= 4);
 });
 
-test('an attack starts the visible 9.5 second recovery timer', () => {
+test('an attack starts the visible 5 second recovery timer', () => {
   const s = createGame();
-  s.generatedTo = -1e6;
+  disableSpawning(s);
   const hibana = s.allies.find(ally => ally.id === 'hibana')!;
   hibana.hp = 1;
   s.enemies = [staticEnemy(.23, .71, 10, 0)];
@@ -390,6 +403,8 @@ test('an attack starts the visible 9.5 second recovery timer', () => {
   step(s, STEP);
   assert.equal(hibana.status, 'downed');
   assert.equal(hibana.hp, 0);
+  assert.equal(RECOVERY_SECONDS, 5);
+  assert.equal(REVIVE_HP, 1);
   assert.equal(hibana.reviveIn, RECOVERY_SECONDS);
 });
 
@@ -454,7 +469,7 @@ test('collapse ignores danger acknowledgement and retreat restores the saved cam
   assert.equal(s.spent, 20);
   assert.deepEqual(s.upgrades, { hook: 1 });
   assert.ok(s.allies.every(ally => ally.status === 'active' && ally.hp === ally.maxHp));
-  s.generatedTo = -1e6;
+  disableSpawning(s);
   resume(s);
   step(s, STEP);
   assert.equal(s.pauseReason, null, 'old high-water progress must not immediately stop a new attempt');
@@ -481,7 +496,7 @@ test('save validation migrates older saves and preserves recovery, collapse, and
   oldAllies[1].hp = 0;
   for (const ally of oldAllies) { delete ally.status; delete ally.reviveIn; }
   const migrated = validateSave(legacy);
-  assert.equal(migrated?.version, 4);
+  assert.equal(migrated?.version, 5);
   assert.equal(migrated?.allies[1].status, 'downed');
   assert.equal(migrated?.allies[1].reviveIn, RECOVERY_SECONDS);
 
@@ -498,7 +513,7 @@ test('save validation migrates older saves and preserves recovery, collapse, and
   versionTwo.distance = 74;
   versionTwo.best = 160;
   const migratedV2 = validateSave(versionTwo);
-  assert.equal(migratedV2?.version, 4);
+  assert.equal(migratedV2?.version, 5);
   assert.equal(migratedV2?.peakSinceCamp, 74);
 
   const downedSave = createGame();
@@ -522,7 +537,7 @@ test('save validation migrates older saves and preserves recovery, collapse, and
 
 test('world frontline is the rearward of the leading ally and the deepest surviving enemy', () => {
   const s = createGame();
-  s.generatedTo = -1e6;
+  disableSpawning(s);
   s.allies[0].y = -2;
   s.enemies = [staticEnemy(.1, -1), { ...staticEnemy(.9, -3), id: 2 }];
   assert.equal(calculateFrontline(s), -1);
@@ -536,7 +551,8 @@ test('world frontline is the rearward of the leading ally and the deepest surviv
 
 test('progress and measured speed come only from world displacement and camera follows with lag', () => {
   const s = createGame();
-  s.generatedTo = -1e6;
+  disableSpawning(s);
+  s.enemies = [];
   const before = s.frontline;
   for (const a of s.allies) a.y -= .1;
   const camera = s.cameraY;
@@ -544,6 +560,7 @@ test('progress and measured speed come only from world displacement and camera f
   assert.ok(Math.abs(s.distance - 4) < 1e-8);
   assert.ok(Math.abs(s.velocity - 8) < 1e-8);
   assert.ok(s.cameraY < camera && s.cameraY > s.frontline - CAMERA_FRONT_Y);
+  assert.equal(CAMERA_FRONT_Y, .72, 'the front line target is 40% up from the bottom of the viewport');
   assert.equal(s.frontline, before - .1);
   for (const a of s.allies) a.y += .2;
   updateFrontline(s, .5);
@@ -551,7 +568,7 @@ test('progress and measured speed come only from world displacement and camera f
 });
 
 test('edge enemies pursue in two dimensions, retarget casualties and can cross the old screen limits', () => {
-  const s = createGame(); s.generatedTo = -1e6;
+  const s = createGame(); disableSpawning(s);
   const e = { ...staticEnemy(.05, .9), speed: .08, alerted: true };
   s.enemies = [e];
   for (const a of s.allies) { a.x = .7; a.y = 1.15; a.cooldown = 100; }
@@ -564,23 +581,90 @@ test('edge enemies pursue in two dimensions, retarget casualties and can cross t
   assert.ok(s.allies.filter(a => a.status === 'active').every(a => a.y > .94));
 });
 
-test('an untouched region waits offscreen, waiting adds no enemies and retreat retains their IDs and HP', () => {
-  const s = createGame(); generateAhead(s);
-  const original = s.enemies.map(e => ({ id: e.id, hp: e.hp, y: e.y }));
-  const frontier = s.generatedTo;
-  assert.ok(s.enemies.some(e => e.y - s.cameraY < 0 && !e.alerted));
-  for (let i = 0; i < 100; i++) generateAhead(s);
-  assert.deepEqual(s.enemies.map(e => ({ id: e.id, hp: e.hp, y: e.y })), original);
-  s.frontline += .5; s.cameraY += .5; generateAhead(s);
-  assert.equal(s.generatedTo, frontier);
-  assert.deepEqual(s.enemies.map(e => ({ id: e.id, hp: e.hp, y: e.y })), original);
-  s.frontline -= 2; s.cameraY -= 2; generateAhead(s);
-  assert.ok(s.generatedTo < frontier && s.enemies.length > original.length);
-  assert.deepEqual(s.enemies.slice(0, original.length).map(e => ({ id: e.id, hp: e.hp, y: e.y })), original);
+test('the opening visible field follows spatial density and relative movement drives new encounters', () => {
+  const samples = Array.from({ length: 250 }, (_, seed) => createGame(seed + 1));
+  const averageOpeningCount = samples.reduce((sum, s) => sum + s.enemies.length, 0) / samples.length;
+  assert.ok(averageOpeningCount > 10.5 && averageOpeningCount < 12.8,
+    'the 28.8m visible forward field has about 11.6 enemies on average at the starting depth');
+  for (const s of samples) {
+    assert.ok(s.enemies.every(e => e.y <= s.frontline && e.y >= s.frontline - CAMERA_FRONT_Y),
+      'the initial Poisson field occupies only the visible forward region');
+  }
+
+  const stopped = createGame(194);
+  const totalExposure = () => ENEMY_KIND_IDS.reduce((sum, id) => sum + stopped.spawnExposure[id], 0);
+  const spawnY = stopped.allies.reduce((front, a) => Math.min(front, a.y), Infinity) - CAMERA_FRONT_Y - SPAWN_LEAD_UNITS;
+  const density = enemyDensity((WORLD_ORIGIN_Y - spawnY) * METRES_PER_UNIT);
+  const expectedHazardRate = (forwardMps: number) => density * ENEMY_KINDS.reduce((sum, kind) =>
+    sum + ENEMY_KIND_SHARES[kind.id] * Math.max(0,
+      forwardMps + kind.speed * UNALERTED_ENEMY_SPEED_RATIO * METRES_PER_UNIT), 0);
+  const beforeStop = totalExposure();
+  advanceEncounterField(stopped, 1, 0);
+  const stoppedExposure = totalExposure() - beforeStop;
+  assert.ok(Math.abs(stoppedExposure - expectedHazardRate(0)) < 1e-9,
+    'stationary flow is density multiplied by the enemies’ own weighted approach speed');
+
+  const beforeAdvance = totalExposure();
+  advanceEncounterField(stopped, 1, 1.4);
+  const advanceExposure = totalExposure() - beforeAdvance;
+  assert.ok(Math.abs(advanceExposure - expectedHazardRate(1.4)) < 1e-9,
+    'forward flow adds allied movement to each enemy type’s approach speed');
+
+  const beforeRetreat = totalExposure();
+  advanceEncounterField(stopped, 1, -1.0);
+  const retreatExposure = totalExposure() - beforeRetreat;
+  assert.ok(retreatExposure < stoppedExposure, 'retreat reduces new encounter flow while faster runners can still arrive');
+  assert.ok(ENEMY_KIND_IDS.every(id => stopped.spawnExposure[id] >= 0), 'cumulative exposure never reverses');
+
+  const existing = stopped.enemies[0];
+  const saved = { id: existing.id, hp: existing.hp, y: existing.y };
+  for (const ally of stopped.allies) ally.y += .5;
+  advanceEncounterField(stopped, 2, -1.4);
+  assert.ok(stopped.enemies.some(e => e.id === saved.id && e.hp === saved.hp),
+    'backing away does not erase an already materialized enemy');
+  const ids = stopped.enemies.map(e => e.id);
+  assert.equal(new Set(ids).size, ids.length, 'retreat and renewed movement never duplicate enemy IDs');
+});
+
+test('new enemies materialize beyond the screen and enter it by moving at their own speed', () => {
+  const s = createGame(7);
+  disableSpawning(s);
+  s.nextSpawnExposure.stray = s.spawnExposure.stray + .0001;
+  advanceEncounterField(s, STEP, 0);
+  const e = s.enemies[s.enemies.length - 1];
+  assert.equal(e.kind, 'stray');
+  assert.ok(e.y < s.cameraY - SPAWN_LEAD_UNITS + .001);
+  assert.ok(e.y < s.cameraY - .1, 'the materialized enemy starts outside the visible top edge');
+  const from = e.y;
+  e.y += e.speed * UNALERTED_ENEMY_SPEED_RATIO * 5;
+  assert.ok(e.y > from && e.y > s.cameraY - .1, 'the enemy moves into the viewport after materialization');
+});
+
+test('density, kind mix, base HP and smooth depth scaling use the requested starting values', () => {
+  assert.equal(enemyDensity(0), .40);
+  assert.ok(Math.abs(enemyDensity(300) - .4402) < 1e-9);
+  assert.ok(Math.abs(enemyDensity(600) - .4804) < 1e-9);
+  assert.ok(Math.abs(enemyDensity(900) - .5206) < 1e-9);
+  assert.equal(enemyDensity(1200), .56);
+  assert.deepEqual(ENEMY_KIND_SHARES, { stray: .5, runner: .2, heavy: .1, swarm: .2 });
+  assert.deepEqual(ENEMY_KINDS.map(kind => [kind.id, kind.hp]), [
+    ['stray', 70], ['runner', 45], ['heavy', 180], ['swarm', 40]
+  ]);
+
+  const s = createGame(194);
+  disableSpawning(s);
+  for (const ally of s.allies) ally.y -= 600 / METRES_PER_UNIT;
+  s.nextSpawnExposure.stray = s.spawnExposure.stray + .0001;
+  advanceEncounterField(s, STEP, 0);
+  const spawned = s.enemies[s.enemies.length - 1];
+  const depth = (WORLD_ORIGIN_Y - spawned.y) * METRES_PER_UNIT;
+  assert.ok(Math.abs(spawned.maxHp - 70 * (1 + depth / 1200)) < 1e-8);
+  assert.ok(Math.abs(spawned.damage - 5 * (1 + depth / 1300)) < 1e-8,
+    'enemy attack scaling remains unchanged');
 });
 
 test('maximum collective retreat is independent of normal movement speed', () => {
-  const s = createGame(); s.generatedTo = -1e6;
+  const s = createGame(); disableSpawning(s);
   s.rates.damage = 6;
   for (const [i, ally] of s.allies.entries()) { ally.x = .3 + i * .1; ally.y = .7; }
   s.retreatBias = 1;
@@ -595,7 +679,7 @@ test('maximum collective retreat is independent of normal movement speed', () =>
   assert.equal(RETREAT_RISE_RATE, 1.5);
   assert.equal(RETREAT_DECAY_RATE, .5);
 
-  const marching = createGame(); marching.generatedTo = -1e6;
+  const marching = createGame(); disableSpawning(marching);
   resume(marching); run(marching, 40);
   const spread = Math.max(...marching.allies.map(a => a.y)) - Math.min(...marching.allies.map(a => a.y));
   assert.ok(spread < .6, 'the fastest ally cannot leave the backline far behind');
@@ -603,7 +687,7 @@ test('maximum collective retreat is independent of normal movement speed', () =>
 
 test('a pressured frontliner retreats slower than a heavy and faster enemies close the gap', () => {
   const separationAfter = (enemySpeed: number): number => {
-    const s = createGame(); s.generatedTo = -1e6;
+    const s = createGame(); disableSpawning(s);
     const gou = s.allies.find(a => a.id === 'gou')!;
     gou.x = .5; gou.y = .7; gou.cooldown = 100;
     for (const ally of s.allies) if (ally !== gou) down(ally, 100);
@@ -623,7 +707,7 @@ test('a pressured frontliner retreats slower than a heavy and faster enemies clo
 });
 
 test('an enemy behind the squad raises persistent retreat pressure and remains on the frontline', () => {
-  const s = createGame(); s.generatedTo = -1e6;
+  const s = createGame(); disableSpawning(s);
   const intruder = staticEnemy(.5, 1.0);
   const ahead = { ...staticEnemy(.5, .2), id: 2 };
   s.enemies = [intruder, ahead];
@@ -646,7 +730,7 @@ test('frontliners hold too-close enemies, ranged allies keep range and Hibana re
     return target;
   };
   const stationaryFrontliner = (id: 'gou' | 'nagi') => {
-    const s = createGame(); s.generatedTo = -1e6;
+    const s = createGame(); disableSpawning(s);
     const ally = centerMember(s, id);
     s.enemies = [staticEnemy(.5, .65)];
     const before = ally.y;
@@ -657,7 +741,7 @@ test('frontliners hold too-close enemies, ranged allies keep range and Hibana re
   assert.ok(stationaryFrontliner('nagi') < .0001, 'Nagi does not backpedal inside preferred range');
 
   const rangedRetreatSpeed = (id: 'tsugumi' | 'genzou') => {
-    const s = createGame(); s.generatedTo = -1e6;
+    const s = createGame(); disableSpawning(s);
     const ally = centerMember(s, id);
     s.enemies = [staticEnemy(.5, .65)];
     const before = ally.y;
@@ -670,7 +754,7 @@ test('frontliners hold too-close enemies, ranged allies keep range and Hibana re
     assert.ok(retreatSpeed <= MAX_RANGE_RETREAT_SPEED + .001, `${id} cannot kite at normal movement speed`);
   }
 
-  const hibana = createGame(); hibana.generatedTo = -1e6;
+  const hibana = createGame(); disableSpawning(hibana);
   const fast = centerMember(hibana, 'hibana');
   hibana.enemies = [staticEnemy(.5, .55)];
   const before = fast.y;
@@ -681,7 +765,7 @@ test('frontliners hold too-close enemies, ranged allies keep range and Hibana re
 });
 
 test('enemy inflow retains unalerted approach speed and alerted pursuit at the notice threshold', () => {
-  const s = createGame(); s.generatedTo = -1e6;
+  const s = createGame(); disableSpawning(s);
   const enemy = { ...staticEnemy(.5, -.5), speed: .048, alerted: false };
   s.enemies = [enemy];
   const before = enemy.y;
@@ -691,36 +775,15 @@ test('enemy inflow retains unalerted approach speed and alerted pursuit at the n
   assert.equal(ENEMY_NOTICE_RANGE, .70);
   assert.equal(enemy.alerted, false, 'an enemy beyond notice range remains unalerted while advancing');
 
-  const noticed = createGame(); noticed.generatedTo = -1e6;
+  const noticed = createGame(); disableSpawning(noticed);
   const pursuing = { ...staticEnemy(.5, .1), speed: .048, alerted: false };
   noticed.enemies = [pursuing];
   resume(noticed); run(noticed, 3);
   assert.equal(pursuing.alerted, true, 'the enemy switches to sticky two-dimensional pursuit inside notice range');
 });
 
-test('spatial enemy supply grows by checkpoint tier without changing enemy stats', () => {
-  const supplyAt = (best: number): GameState => {
-    const s = createGame();
-    s.best = best;
-    generateAhead(s);
-    return s;
-  };
-  const opening = supplyAt(0);
-  const at300 = supplyAt(300);
-  const at600 = supplyAt(600);
-  assert.equal(opening.enemies.length, 24, 'three pre-generated regions contain eight enemies each at launch');
-  assert.equal(at300.enemies.length, 474, 'three regions contain 158 enemies after the first 300m tier');
-  assert.equal(at600.enemies.length, 924, 'three regions contain 308 enemies after the second 300m tier');
-  for (const state of [at300, at600]) {
-    assert.equal(state.enemies[0].kind, opening.enemies[0].kind);
-    assert.equal(state.enemies[0].maxHp, opening.enemies[0].maxHp);
-    assert.equal(state.enemies[0].damage, opening.enemies[0].damage,
-      'inflow changes do not directly alter per-enemy HP or damage');
-  }
-});
-
 test('local protection and counterattack still work at arbitrary world depth', () => {
-  const s = createGame(); s.generatedTo = -1e6; s.camp = 300; s.peakSinceCamp = 300;
+  const s = createGame(); disableSpawning(s); s.camp = 300; s.peakSinceCamp = 300;
   const gou = s.allies[0], nagi = s.allies[1];
   gou.x = .42; gou.y = -10;
   nagi.x = .52; nagi.y = -10.04;
@@ -739,19 +802,36 @@ test('v3 migration translates the battle without changing relative spacing or sa
   old.enemies = [staticEnemy(.3, .6)];
   const restored = validateSave(old)!;
   assert.ok(restored);
-  assert.equal(restored.version, 4);
+  assert.equal(restored.version, 5);
   assert.equal(restored.distance, 145);
   assert.ok(Math.abs(restored.allies[0].y - restored.enemies[0].y - .17) < 1e-8);
   assert.ok(Math.abs((WORLD_ORIGIN_Y - calculateFrontline(restored)) * METRES_PER_UNIT - 145) < 1e-8);
   const saved = decodeSave(encodeSave(restored))!;
-  assert.equal(saved.generatedTo, restored.generatedTo);
+  assert.deepEqual(saved.spawnExposure, restored.spawnExposure);
+  assert.deepEqual(saved.nextSpawnExposure, restored.nextSpawnExposure);
   assert.equal(saved.frontline, restored.frontline);
   assert.deepEqual(saved.enemies, restored.enemies);
 });
 
+test('v4 migration discards untouched regional pre-generation and keeps the nearest combatants', () => {
+  const old = JSON.parse(encodeSave(createGame(42))) as Record<string, unknown>;
+  old.version = 4;
+  delete old.spawnExposure;
+  delete old.nextSpawnExposure;
+  old.generatedTo = -1;
+  const template = { ...staticEnemy(.5, .7), speed: .048, alerted: false };
+  old.enemies = Array.from({ length: 200 }, (_, i) => ({ ...template, id: i + 1, y: .7 - i * .004 }));
+  const restored = validateSave(old)!;
+  assert.ok(restored);
+  assert.equal(restored.version, 5);
+  assert.equal(restored.enemies.length, 16);
+  assert.ok(restored.enemies.every(e => Number.isFinite(e.hp)));
+  assert.ok(restored.nextSpawnExposure.stray > restored.spawnExposure.stray);
+});
+
 
 test('a whole squad knocked out in one frame collapses with a loadable finite world', () => {
-  const s = createGame(); s.generatedTo = -1e6;
+  const s = createGame(); disableSpawning(s);
   for (const [i, a] of s.allies.entries()) {
     a.x = .1 + i * .18; a.y = .8; a.hp = 1;
     s.enemies.push({ ...staticEnemy(a.x, .75, 1000, 0), id: i + 1 });
@@ -767,8 +847,7 @@ test('a whole squad knocked out in one frame collapses with a loadable finite wo
 
 test('an unupgraded expedition measures spatial movement, retreats and re-encounters persistent enemies', () => {
   const s = createGame(194); resume(s);
-  const seen = new Map<number, { close: boolean; separated: boolean }>();
-  let advances = 0, retreats = 0, recontacts = 0;
+  let advances = 0, retreats = 0;
   for (let i = 0; i < 1200 / STEP; i++) {
     const previousDistance = s.distance;
     step(s);
@@ -776,22 +855,56 @@ test('an unupgraded expedition measures spatial movement, retreats and re-encoun
     if (!s.paused) assert.ok(Math.abs(s.velocity - (s.distance - previousDistance) / STEP) < 1e-8);
     if (s.velocity > .5) advances++;
     if (s.velocity < -.5) retreats++;
-    for (const e of s.enemies) {
-      const d = Math.min(...s.allies.filter(a => a.status === 'active').map(a => Math.hypot(a.x - e.x, a.y - e.y)));
-      const prior = seen.get(e.id) ?? { close: false, separated: false };
-      if (prior.close && d > .4) prior.separated = true;
-      if (prior.separated && d < .25) recontacts++;
-      if (d < .25) prior.close = true;
-      seen.set(e.id, prior);
-    }
     if (s.paused && (s.pauseReason === 'camp' || s.pauseReason === 'danger')) resume(s);
     else if (s.paused) break;
   }
   assert.ok(advances > 100 && retreats > 100);
-  assert.ok(recontacts > 0, 'previously contacted enemies survive separation and meet the squad again');
-  assert.ok(s.best >= CAMP_INTERVAL && s.best < CAMP_INTERVAL * 2,
-    'the unupgraded seed reaches the first camp, then stalls in the next pressure band');
+  assert.ok(s.best > 0 && s.best < CAMP_INTERVAL,
+    'the unupgraded seed records real movement while the higher inflow holds it below the first camp');
   const restored = decodeSave(encodeSave(s))!;
   assert.ok(restored);
   assert.deepEqual(restored.enemies, s.enemies);
+
+  const persistent = createGame(100);
+  disableSpawning(persistent);
+  for (const ally of persistent.allies) ally.cooldown = 100;
+  const enemy = { ...staticEnemy(.5, .2), id: 999, alerted: true };
+  persistent.enemies = [enemy];
+  resume(persistent);
+  run(persistent, 4);
+  const nearestDistance = () => Math.min(...persistent.allies.map(a => Math.hypot(a.x - enemy.x, a.y - enemy.y)));
+  const approached = nearestDistance();
+  for (let i = 0; i < 4 / STEP; i++) { persistent.retreatBias = 1; step(persistent); }
+  const separated = nearestDistance();
+  assert.ok(separated > approached, 'the team can move away from an existing enemy');
+  assert.ok(persistent.enemies.some(e => e.id === enemy.id), 'the enemy remains in world state while offscreen');
+  persistent.retreatBias = 0;
+  run(persistent, 6);
+  assert.ok(nearestDistance() < separated, 'the team can encounter that same enemy again after advancing');
+});
+
+test('several long no-upgrade runs remain finite under higher enemy density', () => {
+  const results: Array<{ best: number; maxEnemies: number; maxNear: number; reachedAt: number | null }> = [];
+  for (const seed of [1, 2, 3, 4, 5]) {
+    const s = createGame(seed); resume(s);
+    let maxEnemies = s.enemies.length, maxNear = 0, reachedAt: number | null = null;
+    for (let i = 0; i < 3600 / STEP; i++) {
+      if (s.paused) {
+        if (s.pauseReason === 'camp' || s.pauseReason === 'danger') resume(s);
+        else break;
+      }
+      step(s, STEP);
+      maxEnemies = Math.max(maxEnemies, s.enemies.length);
+      const near = s.enemies.filter(e => s.allies.some(a => a.status === 'active' && Math.hypot(a.x - e.x, a.y - e.y) < .5)).length;
+      maxNear = Math.max(maxNear, near);
+      if (reachedAt === null && s.best >= CAMP_INTERVAL) reachedAt = s.time;
+    }
+    results.push({ best: s.best, maxEnemies, maxNear, reachedAt });
+  }
+  assert.ok(results.every(result => result.reachedAt === null && result.best > 0 && result.best < 100),
+    'without upgrades, all five seeds move but remain below the first camp during the long run');
+  assert.ok(Math.max(...results.map(result => result.maxEnemies)) < 40,
+    'pressure develops without large pre-generated crowds');
+  assert.ok(Math.max(...results.map(result => result.maxNear)) >= 8,
+    'overloaded periods are visible as a larger nearby crowd');
 });

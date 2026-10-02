@@ -1,5 +1,8 @@
 import { ENEMY_KINDS, ROSTER, UPGRADES } from './content.ts';
-import { RECOVERY_SECONDS, WORLD_ORIGIN_Y, METRES_PER_UNIT, CAMERA_FRONT_Y } from './simulation.ts';
+import {
+  RECOVERY_SECONDS, WORLD_ORIGIN_Y, METRES_PER_UNIT, CAMERA_FRONT_Y,
+  ENEMY_KIND_SHARES, INITIAL_VISIBLE_FIELD_METRES, initializeSpawnExposure
+} from './simulation.ts';
 import type {
   AllyId, AllyState, CampSnapshot, EnemyState, GameState, PauseReason, PersistentGameState, Rates,
   Stats, UpgradeId, UpgradeLevels
@@ -107,9 +110,24 @@ function parseStats(raw: unknown): Stats | null {
   if (!rates || !isRecord(raw) || ![raw.collisions, raw.counter, raw.period].every(isFiniteNumber)) return null;
   return { ...rates, collisions: raw.collisions as number, counter: raw.counter as number, period: raw.period as number };
 }
+function parseSpawnExposure(raw: unknown): GameState['spawnExposure'] | null {
+  if (!isRecord(raw)) return null;
+  const ids = ['stray', 'runner', 'heavy', 'swarm'] as const;
+  if (!ids.every(id => isFiniteNumber(raw[id]) && (raw[id] as number) >= 0)) return null;
+  return { stray: raw.stray as number, runner: raw.runner as number, heavy: raw.heavy as number, swarm: raw.swarm as number };
+}
+function keepNearbyLegacyEnemies(enemies: EnemyState[], allies: AllyState[]): EnemyState[] {
+  const activeAllies = allies.filter(a => a.status === 'active');
+  const distance = (enemy: EnemyState): number => activeAllies.length
+    ? Math.min(...activeAllies.map(a => Math.hypot(a.x - enemy.x, a.y - enemy.y)))
+    : Infinity;
+  // Older versions pre-created entire regions. Keep only the nearest 16 live
+  // combatants when upgrading that save; the rest were untouched future supply.
+  return enemies.filter(e => e.hp > 0).sort((a, b) => distance(a) - distance(b)).slice(0, 16);
+}
 
 export function validateSave(raw: unknown): GameState | null {
-  if (!isRecord(raw) || (raw.version !== 1 && raw.version !== 2 && raw.version !== 3 && raw.version !== 4)) return null;
+  if (!isRecord(raw) || (raw.version !== 1 && raw.version !== 2 && raw.version !== 3 && raw.version !== 4 && raw.version !== 5)) return null;
   const legacySave = raw.version < 3;
   const numbers = ['seed', 'nextId', 'time', 'distance', 'best', 'camp', 'velocity', 'kills', 'earnings', 'coins', 'spent', 'spawnIn'];
   if (!numbers.every(field => isFiniteNumber(raw[field]))) return null;
@@ -136,11 +154,13 @@ export function validateSave(raw: unknown): GameState | null {
   if (!collapsed && raw.pauseReason === 'collapse') return null;
   let frontline = raw.frontline as number;
   let cameraY = raw.cameraY as number;
-  let generatedTo = raw.generatedTo as number;
   let retreatBias = raw.retreatBias as number;
-  if (raw.version === 4) {
-    if (![frontline, cameraY, generatedTo, retreatBias].every(isFiniteNumber) || retreatBias < 0 || retreatBias > 1) return null;
+  let migratedEnemies = enemies as EnemyState[];
+  if (raw.version === 4 || raw.version === 5) {
+    if (![frontline, cameraY, retreatBias].every(isFiniteNumber) || retreatBias < 0 || retreatBias > 1) return null;
+    if (raw.version === 4 && !isFiniteNumber(raw.generatedTo)) return null;
     if (Math.abs((WORLD_ORIGIN_Y - frontline) * METRES_PER_UNIT - (raw.distance as number)) > .001) return null;
+    if (raw.version === 4) migratedEnemies = keepNearbyLegacyEnemies(migratedEnemies, allies as AllyState[]);
   } else {
     // Translate the entire old screen-space battle, preserving both relative
     // distances and saved expedition progress. New territory begins beyond it.
@@ -152,21 +172,33 @@ export function validateSave(raw: unknown): GameState | null {
     for (const a of allies as AllyState[]) a.y += shift;
     for (const e of enemies as EnemyState[]) e.y += shift;
     cameraY = frontline - CAMERA_FRONT_Y;
-    generatedTo = Math.min(frontline - .5, ...(enemies as EnemyState[]).map(e => e.y)) - .36;
     retreatBias = 0;
   }
-  // Effects and comparisons are transient; loading always returns a paused expedition.
-  return {
-    version: 4, seed: (raw.seed as number) >>> 0, nextId: raw.nextId as number,
+  const spawnExposure = raw.version === 5 ? parseSpawnExposure(raw.spawnExposure) : null;
+  const nextSpawnExposure = raw.version === 5 ? parseSpawnExposure(raw.nextSpawnExposure) : null;
+  if (raw.version === 5 && (!spawnExposure || !nextSpawnExposure)) return null;
+  if (raw.version === 5 && Object.keys(ENEMY_KIND_SHARES).some(id =>
+    nextSpawnExposure![id as keyof typeof nextSpawnExposure] < spawnExposure![id as keyof typeof spawnExposure])) return null;
+  const state: GameState = {
+    version: 5, seed: (raw.seed as number) >>> 0, nextId: raw.nextId as number,
     time: raw.time as number, distance: raw.distance as number, best: raw.best as number,
     peakSinceCamp,
     camp: raw.camp as number, velocity: raw.velocity as number, kills: raw.kills as number,
     earnings: raw.earnings as number, coins: raw.coins as number, spent: raw.spent as number,
-    upgrades, allies: allies as AllyState[], enemies: enemies as EnemyState[], effects: [],
-    frontline, cameraY, generatedTo, retreatBias,
+    upgrades, allies: allies as AllyState[], enemies: migratedEnemies, effects: [],
+    frontline, cameraY, spawnExposure: spawnExposure || { stray: 0, runner: 0, heavy: 0, swarm: 0 },
+    nextSpawnExposure: nextSpawnExposure || { stray: 0, runner: 0, heavy: 0, swarm: 0 }, retreatBias,
     spawnIn: raw.spawnIn as number, paused: true,
     pauseReason: collapsed ? 'collapse' : (raw.pauseReason as PauseReason) || 'manual', speed: raw.speed as 1 | 2 | 4,
     dangerAcknowledged: typeof raw.dangerAcknowledged === 'boolean' ? raw.dangerAcknowledged : raw.pauseReason === 'danger',
     campSnapshot, stats, rates, events: raw.events as string[], comparison: null
   };
+  if (raw.version !== 5) {
+    // Legacy versions generated large regions before they were reached. Drop
+    // that untouched supply and start the new spatial stream beyond the field
+    // currently represented around the party.
+    initializeSpawnExposure(state, INITIAL_VISIBLE_FIELD_METRES);
+  }
+  // Effects and comparisons are transient; loading always returns a paused expedition.
+  return state;
 }
