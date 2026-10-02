@@ -20,7 +20,9 @@ export function bodyUI(s: State, selected: Part | null, inspecting: MutationId |
   const inspected = candidates.find(m => m.id === inspecting);
   const groups = tiers.map(tier => `<section class="mutation-tier"><h4>${String(tier).padStart(2, '0')} <span>${tier === 1 ? '基礎変異' : '深部変異'}</span></h4><div class="candidate-grid">${candidates.filter(m => (m.tier ?? 1) === tier).map(m => {
     const owned = s.mutations.includes(m.id), block = mutationBlock(s, m.id), info = INFO[m.id];
-    return `<button class="candidate ${owned ? 'owned' : ''} ${inspected?.id === m.id ? 'selected' : ''}" data-inspect="${m.id}" aria-pressed="${inspected?.id === m.id}"><span class="candidate-family">${info.family}${owned ? ' · 取得済み' : ''}</span><span class="candidate-title">${m.name}<b>${owned ? '✓' : '◇ '+cost(s,m.id)}</b></span><span class="candidate-stat">${info.stats[0][0]} <strong>${info.stats[0][1]}</strong></span><span class="candidate-condition">${m.requires?.length ? m.requires.map(name).join(' + ') + ' →' : info.tradeoff ?? '基礎'} ${owned ? '✓' : block ?? '取得可能'}</span></button>`;
+    const relation = m.requires?.length ? m.requires.map(name).join(' + ')+' → ' : info.tradeoff ? info.tradeoff+' · ' : '';
+    const status = owned ? '取得済み' : block?.startsWith('前提:') ? '前提未取得' : block === info.tradeoff ? '選択不可' : block ?? '取得可能';
+    return `<button class="candidate ${owned ? 'owned' : ''} ${inspected?.id === m.id ? 'selected' : ''}" data-inspect="${m.id}" aria-pressed="${inspected?.id === m.id}"><span class="candidate-family">${info.family}${owned ? ' · 取得済み' : ''}</span><span class="candidate-title">${m.name}<b>${owned ? '✓' : '◇ '+cost(s,m.id)}</b></span><span class="candidate-stat">${info.stats[0][0]} <strong>${info.stats[0][1]}</strong></span><span class="candidate-condition">${relation}${status}</span></button>`;
   }).join('')}</div></section>`).join('');
   let detail = '';
   if (inspected) {

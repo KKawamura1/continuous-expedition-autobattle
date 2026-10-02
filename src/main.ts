@@ -47,6 +47,9 @@ function updateHUD(dt: number): void {
   hud.hidden = intro || s.mode !== 'running';
   hudClock += dt; if (hud.hidden || hudClock < .1) return; hudClock = 0;
   const progress = Math.max(0, Math.min(1, (s.distance-s.checkpoint)/SEGMENT)), hp = Math.max(0,s.health/MAX_HEALTH);
+  const feedbackNames: Record<string,string> = {pull:'引き寄せ',bite:'噛みつき',sweep:'角の押し出し',collision:'敵同士の衝突',rebound:'鱗の反発',scrape:'鱗の切創',hook:'鱗の拘束'};
+  const active = [...new Set(s.effects.filter(e=>e.type!=='dust').map(e=>`${e.source ? MUTATIONS.find(m=>m.id===e.source)?.name+'・' : ''}${feedbackNames[e.type]}`))];
+  canvas.setAttribute('aria-label', `戦場：敵${s.enemies.length}体${active.length?'。'+active.join('、'):''}`);
   growthValue.textContent = String(s.growth);
   speedValue.textContent = `${s.speed >= 0 ? '+' : ''}${s.speed.toFixed(1)} m/s`;
   speedValue.dataset.retreat = String(s.speed < -.1);
@@ -68,6 +71,7 @@ function renderUI(force=false): void {
   handle.hidden=intro||!['running','body'].includes(s.mode);
   handle.setAttribute('aria-label',s.mode==='body'?'身体を戻して遠征を再開する':'身体を引き上げて変異する');
   handle.querySelector('small')!.textContent=s.mode==='body'?'再開 ↑':'変異 / PAUSE';
+  if(s.mode==='body')canvas.setAttribute('aria-label','古代龍蛇の身体全体。部位を選んで変異を比較');
   if(intro){
     ui.innerHTML=`<section class="title"><p class="eyebrow">CONTINUOUS EXPEDITION</p><h1>まだ、<br>先へ。</h1><button class="primary" data-action="start">${saved?'CONTINUE':'START'}<span>↗</span></button>${saved?'<button class="text-button" data-action="reset">NEW EXPEDITION</button>':''}</section>`;
   }else if(s.mode==='body'){
