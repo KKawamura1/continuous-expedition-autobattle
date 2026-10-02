@@ -709,8 +709,8 @@ test('spatial enemy supply grows by checkpoint tier without changing enemy stats
   const at300 = supplyAt(300);
   const at600 = supplyAt(600);
   assert.equal(opening.enemies.length, 24, 'three pre-generated regions contain eight enemies each at launch');
-  assert.equal(at300.enemies.length, 114, 'three regions contain 38 enemies after the first 300m tier');
-  assert.equal(at600.enemies.length, 204, 'three regions contain 68 enemies after the second 300m tier');
+  assert.equal(at300.enemies.length, 474, 'three regions contain 158 enemies after the first 300m tier');
+  assert.equal(at600.enemies.length, 924, 'three regions contain 308 enemies after the second 300m tier');
   for (const state of [at300, at600]) {
     assert.equal(state.enemies[0].kind, opening.enemies[0].kind);
     assert.equal(state.enemies[0].maxHp, opening.enemies[0].maxHp);
