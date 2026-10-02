@@ -1,11 +1,14 @@
 import { WORLD_SCALE, has } from './content';
 import type { Enemy, State } from './types';
+import { drawBody, drawHorns, drawJaw } from './creature-art';
+import { drawGirl } from './girl-art';
+import { drawSand } from './terrain-art';
 const INK = '#263a3b', BONE = '#dfd8b6';
 function poly(c: CanvasRenderingContext2D, points: number[][], fill: string, stroke = INK, width = 2): void {
   c.beginPath(); points.forEach(([x,y], i) => i ? c.lineTo(x,y) : c.moveTo(x,y)); c.closePath();
   c.fillStyle = fill; c.fill(); if (stroke) { c.strokeStyle = stroke; c.lineWidth = width; c.stroke(); }
 }
-function oval(c: CanvasRenderingContext2D, x: number, y: number, rx: number, ry: number, color: string, stroke = ''): void {
+function oval(c: CanvasRenderingContext2D, x: number, y: number, rx: number, ry: number, color: string | CanvasGradient, stroke = ''): void {
   c.beginPath(); c.ellipse(x,y,rx,ry,0,0,Math.PI*2); c.fillStyle=color; c.fill(); if(stroke){c.strokeStyle=stroke;c.lineWidth=2;c.stroke();}
 }
 function line(c: CanvasRenderingContext2D, pts: number[][], color: string, width: number): void {
@@ -13,8 +16,8 @@ function line(c: CanvasRenderingContext2D, pts: number[][], color: string, width
 }
 function hash(i: number): number { return ((Math.sin(i * 127.1 + 311.7) * 43758.5453) % 1 + 1) % 1; }
 function ground(c: CanvasRenderingContext2D, s: State, h: number): void {
-  c.fillStyle='#b9a079'; c.fillRect(0,0,390,h);
   const travel=s.distance*WORLD_SCALE;
+  drawSand(c, travel, h);
   const from=Math.floor(travel/160)-1,to=Math.ceil((travel+h)/160)+1;
   for(let row=from;row<=to;row++){
     const y=row*160-travel;
@@ -48,96 +51,134 @@ function ground(c: CanvasRenderingContext2D, s: State, h: number): void {
   }
 }
 function enemy(c: CanvasRenderingContext2D, e: Enemy, x: number, y: number, t: number): void {
-  c.save();c.translate(x,y);c.rotate(Math.atan2(e.vx,Math.max(2,-e.vy*4))*.35);
-  const r=e.radius, stride=Math.sin(t*(e.kind==='wolf'?20:12)+e.id)*2;
-  oval(c,2,5,r*1.1,r*.75,'#877d61');
-  const fill=e.flash>0?'#f4e4bc':e.kind==='beetle'?'#545246':e.kind==='wolf'?'#776653':'#6c5140';
-  if(e.kind==='beetle'){
-    for(const side of [-1,1])for(let i=-1;i<=1;i++)line(c,[[side*4,i*5],[side*(r+3),i*5+stride],[side*(r+5),i*6+3]],'#45473d',1.8);
-    oval(c,0,0,r*.8,r*1.2,fill,INK);line(c,[[0,-r],[0,r]],'#b3a17d',1);oval(c,0,7,4,4,'#353e37');
-  }else{
-    for(const side of [-1,1])for(const yy of [-6,5])line(c,[[side*r*.5,yy],[side*(r+3),yy+stride]],fill,4);
-    oval(c,0,-3,r*.8,r*1.25,fill,INK);
-    poly(c,[[-r*.65,4],[-r*.8,11],[0,17],[r*.8,11],[r*.65,4]],fill);
-    poly(c,[[-r*.7,6],[-r,1],[-r*.3,2]],fill);poly(c,[[r*.7,6],[r,1],[r*.3,2]],fill);
-    if(e.kind==='boar'){line(c,[[-9,12],[-12,17],[-7,15]],BONE,3);line(c,[[9,12],[12,17],[7,15]],BONE,3);}
-    else line(c,[[0,-r*1.5],[3,-r*2]],fill,4);
-    oval(c,-4,10,1.3,1.3,'#d8ba7c');oval(c,4,10,1.3,1.3,'#d8ba7c');
+  c.save(); c.translate(x, y); c.rotate(Math.atan2(e.vx, Math.max(2, -e.vy * 4)) * .35);
+  const r = e.radius, stride = Math.sin(t * (e.kind === 'wolf' ? 20 : 12) + e.id) * 2;
+  oval(c, 2, 5, r * 1.05, r * .8, '#574e3a30');
+  const fill = c.createLinearGradient(-r, -r, r, r);
+  if (e.flash > 0) { fill.addColorStop(0, '#fff0cc'); fill.addColorStop(1, '#cbb67a'); }
+  else if (e.kind === 'beetle') { fill.addColorStop(0, '#79816a'); fill.addColorStop(.4, '#4c5b4e'); fill.addColorStop(1, '#253f3c'); }
+  else { fill.addColorStop(0, e.kind === 'wolf' ? '#aaa392' : '#93806b'); fill.addColorStop(.5, e.kind === 'wolf' ? '#777a70' : '#69554a'); fill.addColorStop(1, '#3d403a'); }
+  const outline = '#384239';
+  if (e.kind === 'beetle') {
+    for (const side of [-1, 1]) for (let i = -1; i <= 1; i++) {
+      line(c, [[side * 4, i * 5], [side * (r + 3), i * 5 + stride], [side * (r + 5), i * 6 + 3]], '#41493d', 1.6);
+      line(c, [[side * (r + 2), i * 5 + stride], [side * (r + 4), i * 6 + 3]], '#88886b', .6);
+    }
+    oval(c, 0, 0, r * .8, r * 1.1, fill, outline);
+    c.beginPath(); c.moveTo(0, -r); c.quadraticCurveTo(-2, 0, 0, r); c.strokeStyle = '#263c34'; c.lineWidth = 1.2; c.stroke();
+    c.beginPath(); c.moveTo(-4, -r + 2); c.quadraticCurveTo(-7, 0, -4, 4); c.strokeStyle = '#c1bea0'; c.lineWidth = .8; c.stroke();
+    oval(c, 0, r * .8, 4.5, 4, fill, outline);
+    line(c, [[-3, r + 1], [-5, r + 5], [-3, r + 6]], '#444a3b', 1.2);
+    line(c, [[3, r + 1], [5, r + 5], [3, r + 6]], '#444a3b', 1.2);
+  } else {
+    for (const side of [-1, 1]) for (const yy of [-6, 5]) {
+      line(c, [[side * r * .5, yy], [side * (r + 1), yy + stride], [side * (r + 3), yy + 3 + stride]], '#4c5045', 3.4);
+      line(c, [[side * r * .5, yy], [side * (r + 1), yy + stride]], e.kind === 'wolf' ? '#969786' : '#847363', 2);
+    }
+    if (e.kind === 'wolf') {
+      c.beginPath(); c.moveTo(0, -r); c.bezierCurveTo(-2, -r * 2.1, 6, -r * 2.3, 2, -r * 2.7);
+      c.strokeStyle = '#555e54'; c.lineWidth = 4; c.lineCap = 'round'; c.stroke();
+    }
+    oval(c, 0, -3, r * .78, r * 1.3, fill, outline);
+    c.lineWidth = .8; c.strokeStyle = '#c1bd9e';
+    c.beginPath(); c.moveTo(-2, -r); c.bezierCurveTo(-4, -5, -2, 0, -3, 5); c.stroke();
+    c.beginPath(); c.moveTo(-r * .65, 3); c.quadraticCurveTo(-r, 8, -r * .4, 12);
+    c.quadraticCurveTo(0, e.kind === 'wolf' ? 19 : 17, r * .4, 12);
+    c.quadraticCurveTo(r, 8, r * .65, 3); c.closePath();
+    c.fillStyle = fill; c.fill(); c.strokeStyle = outline; c.lineWidth = 1.2; c.stroke();
+    for (const side of [-1, 1]) {
+      poly(c, [[side * r * .6, 6], [side * r * .82, -1], [side * r * .15, 4]], '#686d5d', outline, .8);
+      line(c, [[side * r * .6, 4], [side * r * .67, 1]], '#b5a88c', .7);
+      oval(c, side * r * .35, 9, 1.1, .8, '#d0bb75');
+    }
+    oval(c, 0, e.kind === 'wolf' ? 15 : 14, e.kind === 'wolf' ? 2.5 : 4, 2, '#343d35');
+    if (e.kind === 'boar') {
+      line(c, [[-9, 12], [-12, 17], [-8, 15]], '#e7dabb', 2);
+      line(c, [[9, 12], [12, 17], [8, 15]], '#e7dabb', 2);
+      for (let i = -1; i <= 1; i++) line(c, [[i * 3, -18], [i * 3 + 1, -9]], '#4e473e', 1.2);
+    }
   }
-  c.restore();
-}
-function girl(c: CanvasRenderingContext2D, s: State, y: number, idle: number): void {
-  c.save();c.translate(5,y);
-  const alarm=s.pressure>4, cheer=s.reactionTime>0&&!alarm;
-  const f=Math.sin(idle*3), foot=Math.sin(idle*5)*2;
-  oval(c,0,12,13,7,'#263b3c');
-  line(c,[[-5,10],[-8,19+foot]],'#ac9370',4);line(c,[[5,10],[9,19-foot]],'#ac9370',4);
-  line(c,[[-8,19+foot],[-12,20+foot]],'#343a35',4);line(c,[[9,19-foot],[13,20-foot]],'#343a35',4);
-  poly(c,[[-8,-4],[-7,11],[7,11],[8,-4]],'#c75e38',INK,1.5);
-  line(c,[[-7,0],[-12,cheer?-8:alarm?7:4+f]],'#bd9c75',3);line(c,[[7,0],[12,cheer?-10:alarm?7:4-f]],'#bd9c75',3);
-  oval(c,0,-8,7,8,'#cba57c',INK);poly(c,[[-7,-8],[-7,-15],[2,-18],[7,-13],[7,-6],[2,-10],[-2,-8]],'#453c32',INK,1);
-  poly(c,[[-6,-1],[6,-1],[8,2],[1,4],[-2,1],[-11,4-f]],'#e6bd59','',0);
   c.restore();
 }
 function creature(c: CanvasRenderingContext2D, s: State, head: number, h: number, idle: number): void {
-  const m=s.mutations;
-  const wave=Math.sin(s.time*(has(m,'fast')?6:3))*(has(m,'heavy-neck')?2:5);
-  const bite=Math.max(0,1-s.bite/.18)*7;
-  c.save();c.translate(195+wave,head+Math.sin(idle*1.2)*1.4);
-  // A continuous mass wider than the screen: body, neck and head have no pinched join.
-  c.beginPath();c.moveTo(-238,h);c.lineTo(-236,130);c.bezierCurveTo(-248,75,-218,23,-166,16);c.bezierCurveTo(-111,1,-66,-6,0,-4);c.bezierCurveTo(66,-6,111,1,166,16);c.bezierCurveTo(218,23,248,75,236,130);c.lineTo(238,h);c.closePath();
-  c.fillStyle='#526967';c.fill();c.strokeStyle=INK;c.lineWidth=4;c.stroke();
-  // Broad lateral armour plates make the width readable even when clipped.
-  for(const side of [-1,1]){
-    c.save();c.scale(side,1);
-    poly(c,[[125,34],[182,24],[222,49],[226,101],[187,125],[147,95]],'#687b70');
-    poly(c,[[154,125],[214,110],[233,157],[214,209],[153,204],[126,164]],'#61766d');
-    poly(c,[[147,212],[222,205],[239,259],[209,300],[148,287],[119,249]],'#5d736b');
-    line(c,[[169,40],[199,51],[205,81]],'#9aab8c',3);
-    for(let yy=95;yy<h;yy+=90){
-      if(has(m,'thorn'))poly(c,[[190,yy],[221,yy-20],[213,yy+20]],BONE);
-      if(has(m,'hook-scale'))line(c,[[184,yy],[208,yy+12],[202,yy+23]],BONE,4);
-      if(has(m,'elastic-scale'))oval(c,190,yy,27,18,'#95a595',INK);
+  const m = s.mutations;
+  const sweep = s.effects.find(e => e.type === 'sweep');
+  const bite = s.effects.find(e => e.type === 'bite');
+  const impact = sweep ? Math.sin(sweep.life / sweep.maxLife * Math.PI) : 0;
+  const wave = Math.sin(s.time * (has(m, 'fast') ? 5 : 2.2)) * (has(m, 'heavy-neck') ? 1.5 : 3);
+  c.save(); c.translate(195 + wave + impact * 3, head + Math.sin(idle * 1.3) * 1.2);
+  c.scale(1 + Math.sin(idle * 1.3) * .002, 1);
+  drawBody(c);
+  // Anatomical additions share the art's shaded, rounded surface language.
+  if (has(m, 'heavy-neck')) {
+    for (const side of [-1, 1]) {
+      c.save(); c.scale(side, 1);
+      const g = c.createLinearGradient(45, 100, 145, 186);
+      g.addColorStop(0, '#96aa98'); g.addColorStop(.35, '#618780'); g.addColorStop(1, '#253f4d');
+      c.beginPath(); c.moveTo(59, 113); c.bezierCurveTo(89, 140, 146, 118, 167, 147);
+      c.bezierCurveTo(169, 171, 127, 199, 82, 193); c.quadraticCurveTo(91, 151, 59, 113);
+      c.fillStyle = g; c.fill(); c.strokeStyle = '#203b48'; c.lineWidth = 2; c.stroke();
+      line(c, [[83, 137], [123, 141], [146, 153]], '#a1b69f', 1.5);
+      c.restore();
     }
-    // Ivory horns follow the surface, with visible shape mutations.
-    const thick=has(m,'heavy-horn')?24:13, bend=has(m,'curl')?58:128;
-    poly(c,[[100,56],[100+thick,23],[125,-20],[bend,-69],[has(m,'curl')?91:145,-30],[142,13],[151,68]],BONE,INK,3);
-    poly(c,[[111,44],[125,8],[125,-20],[bend,-69],[118,-24],[109,11]],'#f2e8c6','');
-    if(has(m,'branch')){
-      poly(c,[[128,-8],[164,-28],[174,-51],[165,-15],[143,13]],BONE);
-      poly(c,[[111,16],[82,-6],[74,-29],[82,14],[104,37]],BONE);
+  }
+  for (const side of [-1, 1]) {
+    c.save(); c.scale(side, 1);
+    for (let yy = 184; yy < h + 100; yy += 68) {
+      if (has(m, 'thorn')) {
+        c.beginPath(); c.moveTo(148, yy + 27); c.quadraticCurveTo(165, yy + 4, 178, yy - 10);
+        c.quadraticCurveTo(174, yy + 20, 181, yy + 29); c.closePath();
+        const g = c.createLinearGradient(148, yy, 178, yy + 20);
+        g.addColorStop(0, '#e7dfbe'); g.addColorStop(1, '#839184');
+        c.fillStyle = g; c.fill(); c.strokeStyle = '#314d50'; c.lineWidth = 1.2; c.stroke();
+      }
+      if (has(m, 'hook-scale')) {
+        c.beginPath(); c.moveTo(190, yy + 10); c.bezierCurveTo(202, yy - 8, 222, yy + 7, 204, yy + 24);
+        c.bezierCurveTo(216, yy + 8, 200, yy + 6, 190, yy + 10);
+        c.fillStyle = '#c2c2a2'; c.fill(); c.strokeStyle = '#284650'; c.lineWidth = 1; c.stroke();
+      }
+      if (has(m, 'elastic-scale')) {
+        const g = c.createRadialGradient(176, yy + 4, 2, 184, yy + 13, 24);
+        g.addColorStop(0, '#a0bda8'); g.addColorStop(.4, '#6d9e91'); g.addColorStop(1, '#244b5a');
+        oval(c, 184, yy + 13, 25, 16, g, '#2c535a');
+        line(c, [[168, yy + 7], [179, yy + 2], [192, yy + 5]], '#bdd3b4', 1);
+      }
     }
-    // Eyes remain small and remote on a giant head.
-    poly(c,[[163,53],[190,51],[183,58],[166,59]],INK,'');line(c,[[173,55],[180,55]],'#e4bf60',2);
+    if (has(m, 'fast')) {
+      for (let i = 0; i < 3; i++) {
+        const y = 112 + i * 13;
+        c.beginPath(); c.moveTo(62, y); c.quadraticCurveTo(77, y + 13, 98, y + 11);
+        c.strokeStyle = '#c4b98b'; c.lineWidth = 2 - i * .3; c.stroke();
+      }
+    }
+    if (has(m, 'tentacle')) {
+      const swing = Math.sin(s.time * 2) * 13;
+      c.beginPath(); c.moveTo(76, 220); c.bezierCurveTo(174, 207, 170 + swing, 121, 147, 90);
+      c.strokeStyle = '#122e3a'; c.lineWidth = 11; c.lineCap = 'round'; c.stroke();
+      c.strokeStyle = '#758f7e'; c.lineWidth = 7; c.stroke();
+      c.strokeStyle = '#c4c4a1'; c.lineWidth = 2; c.stroke();
+    }
     c.restore();
   }
-  const jaw=has(m,'wide-jaw')?134:97;
-  poly(c,[[-jaw,16],[-jaw+16,-2],[0,-13],[jaw-16,-2],[jaw,16],[jaw-13,34],[0,42],[-jaw+13,34]],'#71857a');
-  line(c,[[-jaw+8,14],[0,22+bite],[jaw-8,14]],INK,4);
-  for(const side of [-1,1])poly(c,[[side*(jaw-28),16],[side*(jaw-14),16],[side*(jaw-21),29+bite]],BONE,INK,1);
-  if(has(m,'spring-jaw'))line(c,[[-jaw,30],[-jaw+18,46],[0,53],[jaw-18,46],[jaw,30]],BONE,4);
-  if(has(m,'tongue'))poly(c,[[-6,19],[0,37],[11,33],[6,44],[0,44],[-8,25]],'#af715d',INK,1);
-  poly(c,[[-53,46],[0,30],[53,46],[72,115],[43,153],[-43,153],[-72,115]],'#425d5b');
-  for(let yy=72;yy<h;yy+=68){
-    const yy2=yy+Math.sin(idle+yy)*1;
-    poly(c,[[0,yy2-15],[36,yy2+8],[29,yy2+38],[0,yy2+50],[-29,yy2+38],[-36,yy2+8]],yy<155?'#87998a':'#738b7e');
-    poly(c,[[0,yy2-12],[10,yy2+5],[0,yy2+28],[-10,yy2+5]],BONE,INK,1.5);
+  if (bite) oval(c, 0, 9, has(m, 'wide-jaw') ? 114 : 86, 18, '#122930');
+  drawJaw(c, has(m, 'wide-jaw'), bite ? Math.sin(bite.life / bite.maxLife * Math.PI) * 12 : 0);
+  if (has(m, 'spring-jaw')) {
+    c.beginPath(); c.moveTo(-80, 16); c.quadraticCurveTo(0, 55, 80, 16);
+    c.strokeStyle = '#c4c6a6'; c.lineWidth = 3; c.stroke();
   }
-  if(has(m,'heavy-neck')){
-    for(const side of [-1,1])poly(c,[[side*76,115],[side*139,128],[side*139,179],[side*88,196],[side*59,147]],'#849181',INK,3);
+  if (has(m, 'tongue')) {
+    c.beginPath(); c.moveTo(-4, 17); c.bezierCurveTo(-8, 31, 13, 41, 14, 23);
+    c.strokeStyle = '#2d3a3c'; c.lineWidth = 6; c.stroke(); c.strokeStyle = '#b16f62'; c.lineWidth = 3; c.stroke();
   }
-  if(has(m,'fast'))for(const side of [-1,1])line(c,[[side*70,95],[side*96,143],[side*73,188]],'#b6b693',3);
-  if(has(m,'tentacle'))for(const side of [-1,1]){
-    const swing=Math.sin(s.time*2)*12;
-    line(c,[[side*56,210],[side*143,184],[side*(171+swing),108],[side*145,86]],INK,11);
-    line(c,[[side*56,210],[side*143,184],[side*(171+swing),108],[side*145,86]],'#aab395',7);
-  }
-  girl(c,s,111,idle);
-  if(s.reactionTime>0){
-    c.font='bold 12px sans-serif';const textWidth=c.measureText(s.reaction).width;
-    c.fillStyle='#efe6ca';c.strokeStyle=INK;c.lineWidth=1.5;
-    c.beginPath();c.roundRect(20,88,textWidth+18,27,7);c.fill();c.stroke();
-    poly(c,[[21,107],[16,116],[31,112]],'#efe6ca','');c.fillStyle=INK;c.fillText(s.reaction,29,106);
+  drawHorns(c, m);
+  drawGirl(c, s, 123, idle);
+  if (s.reactionTime > 0) {
+    c.font = '600 11px system-ui, sans-serif';
+    const textWidth = c.measureText(s.reaction).width;
+    c.fillStyle = '#f4ecd8'; c.strokeStyle = '#687b75'; c.lineWidth = .8;
+    c.beginPath(); c.roundRect(25, 101, textWidth + 20, 27, 10); c.fill(); c.stroke();
+    poly(c, [[29, 122], [18, 128], [35, 126]], '#f4ecd8', '');
+    c.fillStyle = '#314548'; c.fillText(s.reaction, 35, 118);
   }
   c.restore();
 }
