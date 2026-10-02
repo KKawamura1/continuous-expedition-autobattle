@@ -113,7 +113,7 @@ export interface Comparison extends Rates {
 }
 
 export interface GameState {
-  version: 4;
+  version: 5;
   seed: number;
   nextId: number;
   time: number;
@@ -133,9 +133,12 @@ export interface GameState {
   // y decreases toward unexplored territory; coordinates are never camera-relative.
   frontline: number;
   cameraY: number;
-  generatedTo: number;
+  // Cumulative density-weighted relative travel, split by enemy kind. Both
+  // counters only increase, so retreating never replays the same encounter.
+  spawnExposure: Record<EnemyKindId, number>;
+  nextSpawnExposure: Record<EnemyKindId, number>;
   retreatBias: number;
-  spawnIn: number; // retained for migration of earlier saves; not a spawn timer
+  spawnIn: number; // retained for migration of earlier saves; no longer a timer
   paused: boolean;
   pauseReason: PauseReason;
   dangerAcknowledged: boolean;

@@ -25,8 +25,8 @@ export const UPGRADES = [
 ] satisfies UpgradeDefinition[];
 
 export const ENEMY_KINDS = [
-  { id: 'stray', name: '徘徊体', hp: 31, speed: .048, damage: 5, mass: 1, pressure: 1, bounty: 13, radius: .026, color: '#d49c82' },
-  { id: 'runner', name: '疾走体', hp: 21, speed: .081, damage: 4, mass: .65, pressure: .8, bounty: 11, radius: .021, color: '#edc47e' },
-  { id: 'heavy', name: '重殻体', hp: 83, speed: .031, damage: 9, mass: 2.6, pressure: 2.3, bounty: 29, radius: .041, color: '#ad9dc0' },
-  { id: 'swarm', name: '群体', hp: 19, speed: .056, damage: 3, mass: .55, pressure: .65, bounty: 9, radius: .019, color: '#99bdb1' }
+  { id: 'stray', name: '徘徊体', hp: 70, speed: .048, damage: 5, mass: 1, pressure: 1, bounty: 13, radius: .026, color: '#d49c82' },
+  { id: 'runner', name: '疾走体', hp: 45, speed: .081, damage: 4, mass: .65, pressure: .8, bounty: 11, radius: .021, color: '#edc47e' },
+  { id: 'heavy', name: '重殻体', hp: 180, speed: .031, damage: 9, mass: 2.6, pressure: 2.3, bounty: 29, radius: .041, color: '#ad9dc0' },
+  { id: 'swarm', name: '群体', hp: 40, speed: .056, damage: 3, mass: .55, pressure: .65, bounty: 9, radius: .019, color: '#99bdb1' }
 ] satisfies EnemyKindDefinition[];
