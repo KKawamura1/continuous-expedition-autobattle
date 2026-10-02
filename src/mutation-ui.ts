@@ -1,4 +1,4 @@
-import { bodyPose } from './body-layout';
+import { bodyHead, bodySurfaceY } from './body-layout';
 import { INFO, MUTATIONS, PARTS } from './content';
 import { cost, mutationBlock } from './simulation';
 import type { MutationId, Part, State } from './types';
@@ -7,11 +7,11 @@ function link(id: MutationId, s: State): string {
   return `<button class="relation ${s.mutations.includes(id) ? 'active' : ''}" data-related="${id}">${name(id)}${s.mutations.includes(id) ? ' ✓' : ''}</button>`;
 }
 export function bodyUI(s: State, selected: Part | null, inspecting: MutationId | null, height: number): string {
-  const pose = bodyPose(height, !!selected);
+  const head = bodyHead(height, s.speed);
   const owned = s.mutations.map(id => MUTATIONS.find(m => m.id === id)!);
   const hotspots = PARTS.map(p => {
     const count = owned.filter(m => m.part === p.id).length;
-    const left = (195 + p.x * pose.scale) / 390 * 100, top = (pose.head + p.y * pose.scale) / height * 100;
+    const left = (195 + p.x) / 390 * 100, top = (head + bodySurfaceY(height, p.y)) / height * 100;
     return `<button class="body-point point-${p.id} ${selected === p.id ? 'selected' : ''}" style="left:${left}%;top:${top}%" data-part="${p.id}" aria-label="${p.name}を選択" aria-pressed="${selected === p.id}"><span class="point-ring">${count ? count : '+'}</span><span class="point-label">${p.name.split('・')[0]}</span></button>`;
   }).join('');
   const part = PARTS.find(p => p.id === selected);

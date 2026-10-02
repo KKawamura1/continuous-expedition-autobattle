@@ -8,7 +8,7 @@ function stroke(c: CanvasRenderingContext2D, pts: number[][], color: string, wid
 }
 function circle(c: CanvasRenderingContext2D,x:number,y:number,r:number,color:string,width=1.5):void {c.beginPath();c.arc(x,y,r,0,Math.PI*2);c.strokeStyle=color;c.lineWidth=width;c.stroke();}
 export function motionTrails(c: CanvasRenderingContext2D, s: State, head: number, reducedMotion: boolean): void {
-  if (s.time < previousTime || s.mode !== 'running') histories.clear();
+  if (s.time < previousTime || s.mode === 'title') histories.clear();
   const newTick = s.time !== previousTime; previousTime=s.time;
   const live = new Set(s.enemies.map(e=>e.id));
   for (const id of histories.keys()) if(!live.has(id))histories.delete(id);

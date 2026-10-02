@@ -133,7 +133,7 @@ function frame(now: number): void {
   const target=!intro&&s.mode==='body'?1:0;reveal+=(target-reveal)*Math.min(1,dt*9);
   // Resume only after the body has settled back into the battlefield.
   if(reveal>.02&&target===0&&s.mode==='running')accumulator=0;
-  draw(ctx,s,{height,reveal,idle,detail:!!selected,reducedMotion:reducedMotion.matches});renderUI();updateHUD(dt);
+  draw(ctx,s,{height,reveal,idle,reducedMotion:reducedMotion.matches});renderUI();updateHUD(dt);
   saveClock+=dt;if(saveClock>=3&&!intro){persist();saveClock=0;}
   if(noticeTimer>0){noticeTimer-=dt;if(noticeTimer<=0)notice.classList.remove('show');}
   requestAnimationFrame(frame);

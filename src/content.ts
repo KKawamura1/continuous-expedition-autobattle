@@ -3,8 +3,8 @@ export const PARTS: { id: Part; name: string; note: string; x: number; y: number
   { id: 'horn', name: '角・頭部', note: '触れる / 集める / 押す', x: -150, y: -40 },
   { id: 'jaw', name: '顎・口腔', note: '噛む / 引き込む', x: 30, y: 10 },
   { id: 'neck', name: '首・前胸', note: '振る / 重さを伝える', x: 115, y: 155 },
-  { id: 'back', name: '背部器官', note: '引っ掛ける', x: 0, y: 365 },
-  { id: 'skin', name: '外皮・鱗', note: '擦る / 留める / 返す', x: -170, y: 600 },
+  { id: 'back', name: '背部器官', note: '引っ掛ける', x: 0, y: 260 },
+  { id: 'skin', name: '外皮・鱗', note: '擦る / 留める / 返す', x: -170, y: 350 },
 ];
 export interface Mutation { id: MutationId; part: Part; name: string; description: string; cost: number; initial: boolean; tier?: number; requires?: MutationId[]; excludes?: MutationId[] }
 export interface MutationInfo { family: string; trigger: string; stats: [string, string][]; synergy: MutationId[]; tradeoff?: string }
