@@ -1,4 +1,5 @@
 import { ENEMIES, INITIAL_UNLOCKS, MAX_HEALTH, MUTATIONS, SEGMENT, WORLD_SCALE, has } from './content';
+import { hornMotion, hornShapes, jawShape, organRestTip, shapeContact, skinEdge, sweepPeriod } from './body-physics';
 import type { Effect, Enemy, EnemyKind, MutationId, State } from './types';
 export const clamp = (n: number, a: number, b: number) => Math.max(a, Math.min(b, n));
 export function createState(): State {
@@ -36,7 +37,6 @@ export function depart(s: State): boolean {
   s.distance = s.checkpoint; s.health = MAX_HEALTH; s.speed = 0; s.pressure = 0; s.growth = 12; s.mutations = []; s.enemies = []; s.effects = []; s.spawn = 0; s.bite = .4; s.sweep = .7; s.organ = 1.5;
   s.mode = 'body'; react(s, 'まだ行くんだ', true); return true;
 }
-export function surface(x: number): number { return -9 * Math.pow(Math.abs(x) / 195, 1.8); }
 export function spawnEnemy(s: State, kind?: EnemyKind, x?: number, y?: number): Enemy {
   const stage = s.checkpoint / SEGMENT;
   const r = random(s);
@@ -69,6 +69,37 @@ export function collide(a: Enemy, b: Enemy): number {
   }
   return 0;
 }
+/** Organs are material hooks. Each arm can hold one body, and a missed tip exerts no force. */
+function operateOrgans(s: State, dt: number): void {
+  const m = s.mutations;
+  const cast = (source: MutationId, side: number, reach: number, bundle = false) => {
+    if (s.effects.some(f => f.type === 'pull' && f.source === source && Math.sign(f.x) === side)) return;
+    const origin = source === 'tongue' ? { x: 0, y: 12 } : { x: side * (bundle ? 105 : 88), y: 125 };
+    const target = s.enemies.filter(e => e.hp > 0 && !s.effects.some(f => f.type === 'pull' && f.targetId === e.id) &&
+      (source === 'tongue' ? Math.abs(e.x) < 90 : Math.sign(e.x) === side && Math.abs(e.x) > 60) &&
+      e.y - s.distance > 10 && Math.hypot(e.x - origin.x, -(e.y - s.distance) * WORLD_SCALE - origin.y) < reach)
+      .sort((a, b) => a.y - b.y)[0];
+    if (target) effect(s, 'pull', origin.x, s.distance - origin.y / WORLD_SCALE, source === 'tongue' ? 1.05 : 1.3, target,
+      { source, strength: bundle ? 2 : 1, attached: false });
+  };
+  if (has(m, 'tongue') && s.organ <= 0) cast('tongue', 0, 312);
+  if (s.organ <= 0) s.organ = 2.7;
+  if (has(m, 'tentacle')) for (const side of [-1, 1]) {
+    cast('tentacle', side, has(m, 'long-tentacle') ? 470 : 350);
+    if (has(m, 'double-tentacle')) cast('long-tentacle', side, 470, true);
+  }
+  for (const f of s.effects.filter(f => f.type === 'pull')) {
+    const e = s.enemies.find(e => e.id === f.targetId);
+    if (!e || e.hp <= 0) { f.attached = false; continue; }
+    const tip = organRestTip(f, s), dx = tip.x - e.x, dy = tip.y + (e.y - s.distance) * WORLD_SCALE;
+    if (!f.attached && Math.hypot(dx, dy) < e.radius + 6) f.attached = true;
+    if (!f.attached) continue;
+    // Spring tension from tip/body separation; heavier bodies lag behind the contracting hook.
+    const stiffness = f.source === 'tongue' && has(m, 'barbed-tongue') ? 85 : 55;
+    e.vx += clamp(dx * stiffness / e.mass, -1600, 1600) * dt;
+    e.vy -= clamp(dy * stiffness / e.mass, -1600, 1600) / WORLD_SCALE * dt;
+  }
+}
 /** One fixed physical tick. All movement and resource generation freeze outside running. */
 export function step(s: State, dt: number): void {
   if (s.mode !== 'running' || !Number.isFinite(dt) || dt <= 0) return;
@@ -76,51 +107,52 @@ export function step(s: State, dt: number): void {
   s.time += dt; s.reactionTime = Math.max(0, s.reactionTime - dt); s.reactionCooldown -= dt;
   s.effects = s.effects.filter(e => { e.life -= dt; return e.life > 0; });
   const m = s.mutations, heavy = (has(m, 'heavy-horn') ? 1.65 : 1) * (has(m, 'heavy-neck') ? 1.5 : 1);
-  const sweepPeriod = (has(m, 'fast') ? .62 : 1.15) * (has(m, 'heavy-horn') ? 1.28 : 1) * (has(m, 'heavy-neck') ? 1.2 : 1) * (has(m, 'ram-horn') ? 1.1 : 1) * (has(m, 'rapid-neck') ? .72 : 1);
   s.spawn += dt * .28 * (1 + Math.min(s.checkpoint / SEGMENT, 6) * .025) * Math.max(.8, 4.5 + s.speed);
   while (s.spawn >= 1 && s.enemies.length < 110) { s.spawn--; spawnEnemy(s); }
   s.spawn = Math.min(s.spawn, 2);
   s.bite -= dt; s.sweep -= dt; s.organ -= dt;
-  const jawReady = s.bite <= 0, sweepReady = s.sweep <= 0;
+  const jawReady = s.bite <= 0;
   if (jawReady) s.bite = has(m, 'crusher') ? 1.26 : 1.05;
-  if (sweepReady) s.sweep = sweepPeriod;
-  const sweepTargets = new Set(sweepReady ? s.enemies.filter(e => e.y-s.distance<27 && e.y-s.distance>-16).sort((a,b)=>a.y-b.y).slice(0,has(m,'crown')?11:has(m,'branch')?7:2).map(e=>e.id) : []);
+  if (s.sweep <= 0) s.sweep += sweepPeriod(m);
+  const horns = hornShapes(m), motion = hornMotion(s), jaw = jawShape(m);
+  operateOrgans(s, dt);
   let touching = 0;
   for (const e of s.enemies) {
     e.flash = Math.max(0, e.flash - dt); e.hpTime = Math.max(0, e.hpTime - dt); e.collisionCooldown -= dt;
     const ahead = e.y - s.distance;
-    const contactY = s.distance + surface(e.x) + e.radius / WORLD_SCALE;
+    const contactY = s.distance - skinEdge(e.x, m) / WORLD_SCALE + e.radius / WORLD_SCALE;
     const touchingBody = e.y <= contactY + .8;
     e.vy += (-e.speed - e.vy) * dt * (has(m, 'hook-scale') && touchingBody ? .35 : 1.7);
     e.vx *= Math.exp(-dt * (has(m, 'hook-scale') && touchingBody ? 8 : 2));
-    if (has(m, 'curl') && ahead < 25 && ahead > -14 && Math.abs(e.x) > 40) {
-      e.vx -= Math.sign(e.x) * 95 / e.mass * dt;
-      if (!s.effects.some(f => f.type === 'pull' && f.targetId === e.id)) effect(s, 'pull', Math.sign(e.x) * 145, s.distance + 4, .32, e, { source: 'curl' });
-    }
-    if (has(m, 'tentacle') && ahead < (has(m, 'long-tentacle') ? 85 : 55) && ahead > 0 && Math.abs(e.x) > 70) {
-      e.vx -= Math.sign(e.x) * 75 * (has(m, 'double-tentacle') ? 1.5 : 1) / e.mass * dt;
-      if (!s.effects.some(f => f.type === 'pull' && f.targetId === e.id)) effect(s, 'pull', Math.sign(e.x) * 125, s.distance - 12, .4, e, { source: 'tentacle' });
-    }
-    if (has(m, 'tongue') && s.organ <= 0 && Math.abs(e.x) < 90 && ahead > 8 && ahead < 75) {
-      e.vy -= 30 * (has(m, 'barbed-tongue') ? 1.6 : 1) / e.mass; effect(s, 'pull', 0, s.distance - 2, .55, e, { source: 'tongue' }); s.organ = 2.7;
-    }
-    if (jawReady && ahead < 15 && ahead > -18 && Math.abs(e.x) < (has(m, 'wide-jaw') ? 135 : 65)) {
+    if (jawReady && shapeContact({ x: e.x, y: -ahead * WORLD_SCALE }, e.radius, jaw)) {
       const closing = Math.max(0, s.speed - e.vy);
       const amount = (has(m, 'wide-jaw') ? 29 : 39) + (has(m, 'spring-jaw') ? closing * 2.4 : 0) + (has(m, 'crusher') ? 20 : 0);
       damage(e, amount);
       effect(s, 'bite', e.x, e.y, .38, e, { strength: amount, source: has(m, 'spring-jaw') ? 'spring-jaw' : has(m, 'crusher') ? 'crusher' : undefined }); e.vy += 8 / e.mass;
     }
-    if (sweepTargets.has(e.id)) {
-      damage(e, (has(m, 'branch') ? 14 : 18) * heavy * (has(m, 'ram-horn') ? 1.4 : 1));
-      e.vy += 16 * heavy * (has(m, 'ram-horn') ? 1.25 : 1) * (has(m, 'rapid-neck') ? .8 : 1) * (has(m, 'fast') ? .75 : 1) * (has(m, 'branch') ? .7 : 1) / e.mass;
-      e.vx += Math.sign(e.x || 1) * 14 * heavy / e.mass;
-      effect(s, 'sweep', e.x, e.y, .4, e, { dx: e.vx, dy: e.vy, strength: heavy, source: has(m, 'heavy-horn') ? 'heavy-horn' : has(m, 'branch') ? 'branch' : undefined });
-    }
     const previousVy = e.vy;
     e.x = clamp(e.x + e.vx * dt, -187, 187); e.y += e.vy * dt;
-    if (e.y < contactY) {
+    // Visible horn surfaces redirect momentum only after material contact.
+    for (const shape of horns) {
+      const hit = shapeContact({ x: e.x - motion.x, y: -(e.y - s.distance) * WORLD_SCALE }, e.radius, shape);
+      if (!hit) continue;
+      e.x += hit.nx * hit.depth; e.y -= hit.ny * hit.depth / WORLD_SCALE;
+      const closing = Math.max(0, -((e.vx - motion.vx) * hit.nx - (e.vy - s.speed) * WORLD_SCALE * hit.ny));
+      // A little restitution and a mass-dependent impact; tangential velocity is retained.
+      const push = closing * (1 + .16 * heavy / e.mass);
+      e.vx += hit.nx * push; e.vy -= hit.ny * push / WORLD_SCALE;
+      if (closing > 8 && !s.effects.some(f => f.type === 'sweep' && f.targetId === e.id)) {
+        const amount = Math.min(65, (9 + closing * .16) * heavy * (has(m, 'ram-horn') ? 1.4 : 1));
+        damage(e, amount);
+        effect(s, 'sweep', hit.x + motion.x, s.distance - hit.y / WORLD_SCALE, .32, e, { strength: heavy, source: has(m, 'ram-horn') ? 'ram-horn' : has(m, 'heavy-horn') ? 'heavy-horn' : has(m, 'crown') ? 'crown' : has(m, 'branch') ? 'branch' : has(m, 'curl') ? 'curl' : undefined });
+      }
+    }
+    e.x = clamp(e.x, -187, 187);
+    // Recompute after sliding along the horns, since the skin edge is curved.
+    const skinY = s.distance - skinEdge(e.x, m) / WORLD_SCALE + e.radius / WORLD_SCALE;
+    if (e.y < skinY) {
       const impactSpeed = Math.max(0, s.speed - previousVy);
-      e.y = contactY; e.contact += dt; e.vy = Math.max(e.vy, s.speed);
+      e.y = skinY; e.contact += dt; e.vy = Math.max(e.vy, s.speed);
       touching += e.mass; s.health -= e.mass * dt * .8;
       if (has(m, 'thorn')) {
         damage(e, dt * (2 + Math.abs(e.vx) * .19 + impactSpeed * .9) * (has(m, 'razor-scale') ? 1.8 : 1));
@@ -135,7 +167,6 @@ export function step(s: State, dt: number): void {
       }
     } else e.contact = 0;
   }
-  if (s.organ <= 0) s.organ = 2.7;
   const grid = new Map<string, Enemy[]>();
   for (const e of s.enemies) {
     const gx = Math.floor(e.x / 32), gy = Math.floor(e.y * WORLD_SCALE / 32);
