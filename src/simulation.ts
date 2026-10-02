@@ -7,10 +7,10 @@ import type {
 // One world-coordinate unit is 40 metres. Positive progress is -y.
 export const METRES_PER_UNIT = 40;
 export const WORLD_ORIGIN_Y = .77;
-export const CAMERA_FRONT_Y = .4;
-export const ENEMY_DENSITY_AT_START = .20;
-export const ENEMY_DENSITY_PER_METRE = .000067;
-export const MAX_ENEMY_DENSITY = .28;
+export const CAMERA_FRONT_Y = .72;
+export const ENEMY_DENSITY_AT_START = .40;
+export const ENEMY_DENSITY_PER_METRE = .000134;
+export const MAX_ENEMY_DENSITY = .56;
 export const INITIAL_VISIBLE_FIELD_METRES = CAMERA_FRONT_Y * METRES_PER_UNIT;
 export const SPAWN_LEAD_UNITS = .2;
 export const ENEMY_KIND_SHARES = { stray: .5, runner: .2, heavy: .1, swarm: .2 } as const;
@@ -22,8 +22,8 @@ export const RETREAT_RISE_RATE = 1.5;
 export const RETREAT_DECAY_RATE = .5;
 export const STEP = 1 / 30;
 export const CAMP_INTERVAL = 300;
-export const RECOVERY_SECONDS = 9.5;
-export const REVIVE_HP_RATIO = .45;
+export const RECOVERY_SECONDS = 5;
+export const REVIVE_HP = 1;
 export const ENEMY_ATTACK_RANGE = .19;
 export const DOWNED_RETREAT_DISTANCE = .08;
 export const INJURY_RETREAT_DISTANCE = .18;
@@ -52,7 +52,7 @@ function resetAlly(a: AllyState, fullHealth = true, position?: Point): void {
   const person = ROSTER.find(r => r.id === a.id)!;
   a.x = position?.x ?? person.x;
   a.y = position?.y ?? person.y;
-  a.hp = fullHealth ? a.maxHp : a.maxHp * REVIVE_HP_RATIO;
+  a.hp = fullHealth ? a.maxHp : REVIVE_HP;
   a.status = 'active';
   a.reviveIn = 0;
   a.shield = 0;
@@ -341,8 +341,8 @@ export function initializeSpawnExposure(s: GameState, alreadySampledMetres: numb
   }
 }
 function seedInitialField(s: GameState): void {
-  // The visible 16m ahead of the frontline already contains its expected spatial population.
-  // Sample the Poisson field from the frontline forward so it is present when play begins.
+  // The visible forward field already contains its expected spatial population.
+  // Sample the Poisson field so it is present when play begins.
   let distanceAhead = 0;
   while (distanceAhead < INITIAL_VISIBLE_FIELD_METRES) {
     distanceAhead += exponentialGap(s) / enemyDensity(distanceAtFrontAhead(s, distanceAhead));

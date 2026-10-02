@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { buy, createGame, pause, refundAtCamp, resume, retreat, step, CAMP_INTERVAL, DOWNED_RETREAT_DISTANCE, ENEMY_ATTACK_RANGE, ENEMY_NOTICE_RANGE, ENEMY_KIND_SHARES, INJURY_RETREAT_DISTANCE, MAX_RANGE_RETREAT_SPEED, MAX_SQUAD_RETREAT_SPEED, NAGI_GUARD_RADIUS, PASSIVE_RECOVERY_PER_SECOND, RECOVERY_SECONDS, RETREAT_DECAY_RATE, RETREAT_RISE_RATE, REVIVE_HP_RATIO, SPAWN_LEAD_UNITS, STEP, UNALERTED_ENEMY_SPEED_RATIO, advanceEncounterField, calculateFrontline, enemyDensity, updateFrontline, WORLD_ORIGIN_Y, METRES_PER_UNIT, CAMERA_FRONT_Y } from '../src/simulation.ts';
+import { buy, createGame, pause, refundAtCamp, resume, retreat, step, CAMP_INTERVAL, DOWNED_RETREAT_DISTANCE, ENEMY_ATTACK_RANGE, ENEMY_NOTICE_RANGE, ENEMY_KIND_SHARES, INJURY_RETREAT_DISTANCE, MAX_RANGE_RETREAT_SPEED, MAX_SQUAD_RETREAT_SPEED, NAGI_GUARD_RADIUS, PASSIVE_RECOVERY_PER_SECOND, RECOVERY_SECONDS, RETREAT_DECAY_RATE, RETREAT_RISE_RATE, REVIVE_HP, SPAWN_LEAD_UNITS, STEP, UNALERTED_ENEMY_SPEED_RATIO, advanceEncounterField, calculateFrontline, enemyDensity, updateFrontline, WORLD_ORIGIN_Y, METRES_PER_UNIT, CAMERA_FRONT_Y } from '../src/simulation.ts';
 import { decodeSave, encodeSave, validateSave } from '../src/save.ts';
 import type { AllyState, EnemyState, GameState } from '../src/types.ts';
 import { ENEMY_KINDS } from '../src/content.ts';
@@ -57,47 +57,32 @@ function down(ally: AllyState, reviveIn = RECOVERY_SECONDS): void {
   ally.shield = 0;
 }
 
-test('the squad reaches its first camp and upgrades help handle the denser next region', () => {
+test('an early damage package offsets the doubled encounter pressure', () => {
   const baseline = createGame(194);
-  resume(baseline); runUntilCamp(baseline, 300);
-  assert.equal(baseline.pauseReason, 'camp');
-  assert.ok(baseline.distance >= CAMP_INTERVAL && baseline.distance < CAMP_INTERVAL + 1);
+  resume(baseline); runAutonomously(baseline, 600);
 
   const modified = createGame(194);
-  resume(modified); run(modified, 45);
-  pause(modified);
-  modified.coins += 500;
-  const before = modified.coins;
+  modified.coins = 500;
   assert.equal(buy(modified, 'cleave'), true);
-  assert.ok(modified.coins < before);
-  resume(modified); runUntilCamp(modified, 300);
-  assert.equal(modified.pauseReason, 'camp');
-  assert.ok(modified.distance >= CAMP_INTERVAL && modified.distance < CAMP_INTERVAL + 1);
-
-  const defensive = createGame(194);
-  resume(defensive); run(defensive, 45); pause(defensive);
-  defensive.coins += 500;
-  assert.equal(buy(defensive, 'counter'), true);
-  assert.equal(buy(defensive, 'barrier'), true);
-  resume(defensive); runUntilCamp(defensive, 300);
-  assert.equal(defensive.pauseReason, 'camp');
-  assert.equal(defensive.upgrades.counter, 1);
+  assert.equal(buy(modified, 'counter'), true);
+  resume(modified); runAutonomously(modified, 600);
+  assert.ok(modified.best > baseline.best + 30,
+    'focused early upgrades increase peak distance under the higher inflow');
 });
 
-test('a first-camp damage package extends distance across several seeds', () => {
+test('an early damage package extends progress across several seeds', () => {
   for (const seed of [1, 2, 3]) {
     const baseline = createGame(seed);
-    resume(baseline); runAutonomously(baseline, 1200);
+    resume(baseline); runAutonomously(baseline, 600);
 
     const upgraded = createGame(seed);
-    resume(upgraded); runUntilCamp(upgraded, 500);
-    assert.equal(upgraded.pauseReason, 'camp');
-    for (const id of ['cleave', 'chain', 'arc', 'rapid', 'rapid', 'rapid']) {
-      assert.equal(buy(upgraded, id), true, `seed ${seed} can afford the staged ${id} package at its first camp`);
+    upgraded.coins = 1000;
+    for (const id of ['cleave', 'chain', 'arc', 'rapid', 'rapid']) {
+      assert.equal(buy(upgraded, id), true, `seed ${seed} can purchase the early ${id} package`);
     }
-    resume(upgraded); runAutonomously(upgraded, 1200 - upgraded.time);
-    assert.ok(upgraded.best > baseline.best + 100,
-      `seed ${seed}: first-camp damage upgrades extend best distance by more than 100m`);
+    resume(upgraded); runAutonomously(upgraded, 600);
+    assert.ok(upgraded.best > baseline.best + 70,
+      `seed ${seed}: the damage package extends peak distance by more than 70m`);
   }
 });
 
@@ -264,7 +249,7 @@ test('frontliners keep their ground near an enemy while a downed teammate slowly
   }
   down(recovering.allies.find(ally => ally.id === 'nagi')!, 20);
   const woundedGou = wounded.allies.find(ally => ally.id === 'gou')!;
-  woundedGou.hp = woundedGou.maxHp * REVIVE_HP_RATIO;
+  woundedGou.hp = REVIVE_HP;
   resume(steady); resume(recovering); resume(wounded);
   run(steady, .25); run(recovering, .25); run(wounded, .25);
 
@@ -397,8 +382,8 @@ test('a downed ally cannot attack and returns after the recovery timer', () => {
   run(recovery, .3);
   assert.equal(recovering.status, 'active');
   assert.equal(recovering.reviveIn, 0);
-  assert.ok(recovering.hp >= recovering.maxHp * REVIVE_HP_RATIO);
-  assert.ok(recovering.hp < recovering.maxHp * (REVIVE_HP_RATIO + .01));
+  assert.ok(recovering.hp >= REVIVE_HP);
+  assert.ok(recovering.hp < REVIVE_HP + PASSIVE_RECOVERY_PER_SECOND * .5);
   assert.ok(recovering.y > Math.min(...recovery.allies.filter(a => a !== recovering).map(a => a.y)), 'a returning teammate enters behind the active squad');
 
   const holdingFront = createGame();
@@ -412,12 +397,12 @@ test('a downed ally cannot attack and returns after the recovery timer', () => {
   resume(holdingFront);
   run(holdingFront, RECOVERY_SECONDS + .2);
   assert.equal(returning.status, 'active', 'the remaining four should hold the line until a teammate returns');
-  assert.ok(returning.hp >= returning.maxHp * REVIVE_HP_RATIO);
-  assert.ok(returning.hp < returning.maxHp * (REVIVE_HP_RATIO + .01));
+  assert.ok(returning.hp >= REVIVE_HP);
+  assert.ok(returning.hp < REVIVE_HP + PASSIVE_RECOVERY_PER_SECOND * .5);
   assert.ok(holdingFront.allies.filter(ally => ally.status === 'active').length >= 4);
 });
 
-test('an attack starts the visible 9.5 second recovery timer', () => {
+test('an attack starts the visible 5 second recovery timer', () => {
   const s = createGame();
   disableSpawning(s);
   const hibana = s.allies.find(ally => ally.id === 'hibana')!;
@@ -427,6 +412,8 @@ test('an attack starts the visible 9.5 second recovery timer', () => {
   step(s, STEP);
   assert.equal(hibana.status, 'downed');
   assert.equal(hibana.hp, 0);
+  assert.equal(RECOVERY_SECONDS, 5);
+  assert.equal(REVIVE_HP, 1);
   assert.equal(hibana.reviveIn, RECOVERY_SECONDS);
 });
 
@@ -582,6 +569,7 @@ test('progress and measured speed come only from world displacement and camera f
   assert.ok(Math.abs(s.distance - 4) < 1e-8);
   assert.ok(Math.abs(s.velocity - 8) < 1e-8);
   assert.ok(s.cameraY < camera && s.cameraY > s.frontline - CAMERA_FRONT_Y);
+  assert.equal(CAMERA_FRONT_Y, .72, 'the front line target is 40% up from the bottom of the viewport');
   assert.equal(s.frontline, before - .1);
   for (const a of s.allies) a.y += .2;
   updateFrontline(s, .5);
@@ -605,8 +593,8 @@ test('edge enemies pursue in two dimensions, retarget casualties and can cross t
 test('the opening visible field follows spatial density and relative movement drives new encounters', () => {
   const samples = Array.from({ length: 250 }, (_, seed) => createGame(seed + 1));
   const averageOpeningCount = samples.reduce((sum, s) => sum + s.enemies.length, 0) / samples.length;
-  assert.ok(averageOpeningCount > 2.7 && averageOpeningCount < 3.8,
-    '16m × 0.20 enemies/m produces about 3.2 visible enemies on average');
+  assert.ok(averageOpeningCount > 10.5 && averageOpeningCount < 12.8,
+    'the 28.8m visible forward field has about 11.6 enemies on average at the starting depth');
   for (const s of samples) {
     assert.ok(s.enemies.every(e => e.y <= s.frontline && e.y >= s.frontline - CAMERA_FRONT_Y),
       'the initial Poisson field occupies only the visible forward region');
@@ -662,11 +650,11 @@ test('new enemies materialize beyond the screen and enter it by moving at their 
 });
 
 test('density, kind mix, base HP and smooth depth scaling use the requested starting values', () => {
-  assert.equal(enemyDensity(0), .20);
-  assert.ok(Math.abs(enemyDensity(300) - .2201) < 1e-9);
-  assert.ok(Math.abs(enemyDensity(600) - .2402) < 1e-9);
-  assert.ok(Math.abs(enemyDensity(900) - .2603) < 1e-9);
-  assert.equal(enemyDensity(1200), .28);
+  assert.equal(enemyDensity(0), .40);
+  assert.ok(Math.abs(enemyDensity(300) - .4402) < 1e-9);
+  assert.ok(Math.abs(enemyDensity(600) - .4804) < 1e-9);
+  assert.ok(Math.abs(enemyDensity(900) - .5206) < 1e-9);
+  assert.equal(enemyDensity(1200), .56);
   assert.deepEqual(ENEMY_KIND_SHARES, { stray: .5, runner: .2, heavy: .1, swarm: .2 });
   assert.deepEqual(ENEMY_KINDS.map(kind => [kind.id, kind.hp]), [
     ['stray', 70], ['runner', 45], ['heavy', 180], ['swarm', 40]
@@ -880,8 +868,8 @@ test('an unupgraded expedition measures spatial movement, retreats and re-encoun
     else if (s.paused) break;
   }
   assert.ok(advances > 100 && retreats > 100);
-  assert.ok(s.best >= CAMP_INTERVAL && s.best < CAMP_INTERVAL * 3,
-    'the unupgraded seed reaches the first camp and slows after entering the denser territory');
+  assert.ok(s.best > 0 && s.best < CAMP_INTERVAL,
+    'the unupgraded seed records real movement while the higher inflow holds it below the first camp');
   const restored = decodeSave(encodeSave(s))!;
   assert.ok(restored);
   assert.deepEqual(restored.enemies, s.enemies);
@@ -904,7 +892,7 @@ test('an unupgraded expedition measures spatial movement, retreats and re-encoun
   assert.ok(nearestDistance() < separated, 'the team can encounter that same enemy again after advancing');
 });
 
-test('several long no-upgrade runs stall in the intended range without hundreds of enemies', () => {
+test('several long no-upgrade runs remain finite under higher enemy density', () => {
   const results: Array<{ best: number; maxEnemies: number; maxNear: number; reachedAt: number | null }> = [];
   for (const seed of [1, 2, 3, 4, 5]) {
     const s = createGame(seed); resume(s);
@@ -922,10 +910,8 @@ test('several long no-upgrade runs stall in the intended range without hundreds 
     }
     results.push({ best: s.best, maxEnemies, maxNear, reachedAt });
   }
-  assert.ok(results.every(result => result.reachedAt !== null && result.reachedAt < 360),
-    'all five seeds reach 300m within six simulated minutes');
-  assert.ok(results.every(result => result.best >= 600 && result.best < 1200),
-    'after 3600s, every unupgraded seed has entered the denser bands but none reaches the density cap');
+  assert.ok(results.every(result => result.reachedAt === null && result.best > 0 && result.best < 100),
+    'without upgrades, all five seeds move but remain below the first camp during the long run');
   assert.ok(Math.max(...results.map(result => result.maxEnemies)) < 40,
     'pressure develops without large pre-generated crowds');
   assert.ok(Math.max(...results.map(result => result.maxNear)) >= 8,
