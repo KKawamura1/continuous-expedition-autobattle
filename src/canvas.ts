@@ -1,10 +1,11 @@
 import { WORLD_SCALE, has } from './content';
 import type { Enemy, State } from './types';
-import { drawBody, drawHorns, drawJaw } from './creature-art';
+import { drawBody, drawHead, drawHorns, drawJaw } from './creature-art';
 import { drawGirl } from './girl-art';
 import { drawSand } from './terrain-art';
 import { battleHead, bodyOffset } from './body-layout';
-import { battleEffects, enemyHealth, motionTrails, newest } from './battle-feedback';
+import { battleEffects, enemyHealth, newest } from './battle-feedback';
+import { jawWidth, skinEdge } from './body-physics';
 const INK = '#263a3b', BONE = '#dfd8b6';
 function poly(c: CanvasRenderingContext2D, points: number[][], fill: string, stroke = INK, width = 2): void {
   c.beginPath(); points.forEach(([x,y], i) => i ? c.lineTo(x,y) : c.moveTo(x,y)); c.closePath();
@@ -104,23 +105,14 @@ function enemy(c: CanvasRenderingContext2D, e: Enemy, x: number, y: number, t: n
 }
 function creature(c: CanvasRenderingContext2D, s: State, head: number, h: number, idle: number, reducedMotion=false): void {
   const m = s.mutations;
-  const sweep = newest(s, 'sweep');
-  const bite = newest(s, 'bite');
-  const collision = newest(s, 'collision');
-  const impact = sweep ? Math.sin(sweep.life / sweep.maxLife * Math.PI) : 0;
-  const wave = Math.sin(s.time * (has(m, 'fast') ? 5 : 2.2)) * (has(m, 'heavy-neck') ? 1.5 : 3);
-  const bitePhase = bite ? 1-bite.life/bite.maxLife : 1;
-  const lunge = bite ? Math.sin(Math.min(1,bitePhase/.45)*Math.PI)*9 : 0;
-  const ready = s.mode==='running'&&s.bite<.13&&s.enemies.some(e=>e.y-s.distance<18&&Math.abs(e.x)<(has(m,'wide-jaw')?135:65));
-  const opening = ready ? (1-s.bite/.13)*19 : bite ? Math.max(0,1-bitePhase/.24)*22 : 0;
-  const recoil = collision ? Math.sin(collision.life/collision.maxLife*Math.PI)*Math.min(3,(collision.strength??0)/10) : 0;
-  c.save(); c.translate(195 + (reducedMotion?0:wave+impact*7), head + (reducedMotion?0:Math.sin(idle*1.3)*1.2-lunge+recoil));
-  c.scale(1 + Math.sin(idle * 1.3) * .002, 1);
+  const ready = s.mode === 'running' && s.bite < .13 && s.enemies.some(e => e.y - s.distance < 18 && Math.abs(e.x) < jawWidth(m));
+  const opening = ready ? (1 - s.bite / .13) * 19 : 0;
+  c.save(); c.translate(195, head);
   drawBody(c);
   // Anatomical additions share the art's shaded, rounded surface language.
   if (has(m, 'heavy-neck')) {
     for (const side of [-1, 1]) {
-      c.save(); c.scale(side, 1);
+      c.save(); c.scale(side * (has(m, 'anchor-neck') ? 1.18 : 1), has(m, 'anchor-neck') ? 1.1 : 1);
       const g = c.createLinearGradient(45, 100, 145, 186);
       g.addColorStop(0, '#96aa98'); g.addColorStop(.35, '#618780'); g.addColorStop(1, '#253f4d');
       c.beginPath(); c.moveTo(59, 113); c.bezierCurveTo(89, 140, 146, 118, 167, 147);
@@ -134,7 +126,7 @@ function creature(c: CanvasRenderingContext2D, s: State, head: number, h: number
     c.save(); c.scale(side, 1);
     for (let yy = 184; yy < h + 100; yy += 68) {
       if (has(m, 'thorn')) {
-        c.beginPath(); c.moveTo(148, yy + 27); c.quadraticCurveTo(165, yy + 4, 178, yy - 10);
+        c.beginPath(); c.moveTo(148, yy + 27); c.quadraticCurveTo(165, yy + 4, 178, yy - (has(m, 'razor-scale') ? 22 : 10));
         c.quadraticCurveTo(174, yy + 20, 181, yy + 29); c.closePath();
         const g = c.createLinearGradient(148, yy, 178, yy + 20);
         g.addColorStop(0, '#e7dfbe'); g.addColorStop(1, '#839184');
@@ -148,7 +140,7 @@ function creature(c: CanvasRenderingContext2D, s: State, head: number, h: number
       if (has(m, 'elastic-scale')) {
         const g = c.createRadialGradient(176, yy + 4, 2, 184, yy + 13, 24);
         g.addColorStop(0, '#a0bda8'); g.addColorStop(.4, '#6d9e91'); g.addColorStop(1, '#244b5a');
-        oval(c, 184, yy + 13, 25, 16, g, '#2c535a');
+        oval(c, 184, yy + 13, 25, has(m, 'rebound-scale') ? 21 : 16, g, '#2c535a');
         line(c, [[168, yy + 7], [179, yy + 2], [192, yy + 5]], '#bdd3b4', 1);
       }
     }
@@ -159,17 +151,27 @@ function creature(c: CanvasRenderingContext2D, s: State, head: number, h: number
         c.strokeStyle = '#c4b98b'; c.lineWidth = 2 - i * .3; c.stroke();
       }
     }
-    if (has(m, 'tentacle')) {
-      const swing = Math.sin(s.time * 2) * 13;
-      c.beginPath(); c.moveTo(76, 220); c.bezierCurveTo(174, 207, 170 + swing, 121, 147, 90);
-      c.strokeStyle = '#122e3a'; c.lineWidth = 11; c.lineCap = 'round'; c.stroke();
-      c.strokeStyle = '#758f7e'; c.lineWidth = 7; c.stroke();
-      c.strokeStyle = '#c4c4a1'; c.lineWidth = 2; c.stroke();
-    }
     c.restore();
   }
+  // The massive head and horns stay fixed to the body.
+  drawHead(c);
   if (opening>0) oval(c, 0, 11, has(m, 'wide-jaw') ? 112 : 86, 9+opening*.65, '#11262f');
-  drawJaw(c, has(m, 'wide-jaw'), reducedMotion?0:opening);
+  drawJaw(c, m, reducedMotion ? 0 : opening);
+  // Material plates at the actual collision edge, plus the same additions down the flank.
+  for (let x = -176; x <= 176; x += 22) {
+    const y = skinEdge(x, m);
+    if (has(m, 'elastic-scale')) {
+      const hit = s.effects.find(f => f.type === 'rebound' && Math.abs(f.x - x) < 24);
+      const compression = hit ? Math.sin(hit.life / hit.maxLife * Math.PI) * 4 : 0;
+      oval(c, x, y + 9 + compression, 13, (has(m, 'rebound-scale') ? 14 : 11) - compression, '#6d9e91', '#244b5a');
+      line(c, [[x-7, y+6+compression], [x, y+3+compression], [x+7, y+6+compression]], '#bdd3b4', 1);
+    }
+    if (has(m, 'thorn')) poly(c, [[x-7,y+18], [x,y], [x+7,y+18]], BONE, '#314d50', 1);
+    if (has(m, 'hook-scale')) {
+      c.beginPath(); c.moveTo(x-6,y+16); c.quadraticCurveTo(x+12,y-5,x+7,y+3); c.quadraticCurveTo(x+5,y+12,x,y+9);
+      c.strokeStyle=BONE; c.lineWidth=3; c.stroke();
+    }
+  }
   if (has(m, 'spring-jaw')) {
     c.beginPath(); c.moveTo(-80, 16); c.quadraticCurveTo(0, 55, 80, 16);
     c.strokeStyle = '#c4c6a6'; c.lineWidth = 3; c.stroke();
@@ -201,9 +203,8 @@ export function draw(c: CanvasRenderingContext2D, s: State, view: View): void {
   c.save();c.translate(shake,offset);
   ground(c,s,h*1.5);
   creature(c,s,baseHead,h,idle,reducedMotion);
-  motionTrails(c,s,baseHead,reducedMotion);
   // The HP and contact effects share exactly the same world coordinates as physics.
-  for(const e of s.enemies){const y=baseHead-(e.y-s.distance)*WORLD_SCALE;if(y+offset>-40&&y+offset<h+40){enemy(c,e,195+e.x,y,s.time);enemyHealth(c,e,195+e.x,y,s);}}
+  for(const e of s.enemies){const y=baseHead-(e.y-s.distance)*WORLD_SCALE;if(y+offset>-40&&y+offset<h+40){enemy(c,e,195+e.x,y,s.time);enemyHealth(c,e,195+e.x,y);}}
   battleEffects(c,s,baseHead,reducedMotion);
   c.restore();
   if(s.health<75){const g=c.createRadialGradient(195,h*.6,120,195,h*.6,h*.7);g.addColorStop(0,'#8e3c2900');g.addColorStop(1,`rgba(112,40,25,${(75-s.health)/125})`);c.fillStyle=g;c.fillRect(0,0,390,h);}

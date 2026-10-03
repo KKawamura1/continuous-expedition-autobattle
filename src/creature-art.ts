@@ -1,3 +1,4 @@
+import { hornGeometry, jawShape } from './body-physics';
 import type { MutationId } from './types';
 
 // Original vector artwork, rasterized once at 2×. The moving parts remain separate
@@ -98,48 +99,54 @@ const face = (() => {
 })();
 
 function hornArt(mutations: MutationId[]): string {
-  const curled = mutations.includes('curl'), heavy = mutations.includes('heavy-horn');
-  const horn = curled
-    ? 'M114 82C94 53 92 15 103-11C120-45 152-43 162-20C167-5 157 6 142 3C155-7 151-23 138-22C119-20 119 6 126 26C135 46 149 58 163 61L151 88Z'
-    : 'M114 82C98 56 99 25 111-6C122-35 141-57 151-91C166-60 152-29 139-5C126 21 135 48 162 63L151 88Z';
-  let art = '';
-  for (const side of [-1, 1]) {
-    art += `<g transform="scale(${side} 1)">
-      <ellipse cx="136" cy="78" rx="31" ry="18" fill="#122e3a" opacity=".65"/>
-      <path d="M103 73Q98 89 122 99Q148 102 167 85L162 70Z" fill="url(#plate)" stroke="#203b43" stroke-width="2"/>
-      <g transform="translate(${heavy ? -16 : 0} 0) scale(${heavy ? 1.14 : 1} 1)">
-        <path d="${horn}" transform="translate(5 5)" fill="#122f3a" opacity=".6"/>
-        <path d="${horn}" fill="url(#bone)" stroke="#30454a" stroke-width="2.2"/>
-        <path d="${curled ? 'M117 69C105 34 103 9 115-12Q131-37 145-27' : 'M118 70C109 40 110 21 120-4Q146-55 151-80'}" fill="none" stroke="#fff2d2" stroke-opacity=".7" stroke-width="2.5"/>
-        <path d="M113 19Q121 25 133 23M109 33Q117 39 131 39M111 49Q122 55 139 54M116 65Q130 70 152 67" fill="none" stroke="#7b826a" stroke-opacity=".4" stroke-width="1.5"/>
-        <path d="M137 68l-5-11 3-8m-17-11 4 3" fill="none" stroke="#6f7665" stroke-opacity=".6" stroke-width="1"/>
-      </g>
-      ${mutations.includes('branch') ? `<path d="M136 21Q162 13 172-7L186-29Q192-7 177 12L147 40Z" fill="url(#bone)" stroke="#30454a" stroke-width="2"/><path d="M115 44Q90 37 84 17L81-3Q70 18 84 38L112 61Z" fill="url(#bone)" stroke="#30454a" stroke-width="2"/>` : ''}
-    </g>`;
-  }
-  return art;
+  const horns = hornGeometry(mutations);
+  const point = (p: { x: number; y: number }) => `${p.x.toFixed(2)} ${p.y.toFixed(2)}`;
+  const path = (points: { x: number; y: number }[]) => `M${points.map(point).join('L')}`;
+  // All sockets sit below the horns; small branches grow directly out of the main horn.
+  const sockets = [-1, 1].map(side => `<ellipse cx="${side * 133}" cy="80" rx="32" ry="21" fill="url(#plate)" stroke="#203b43" stroke-width="2"/>`).join('');
+  return sockets + horns.map(h => {
+    const outline = path(h.outline) + 'Z';
+    const ridge = h.sections.map(p => ({ x: p.center.x - p.normal.x * p.radius * .28, y: p.center.y - p.normal.y * p.radius * .28 }));
+    const shade = [.3, .8].flatMap((amount, i) => (i ? [...h.sections].reverse() : h.sections).map(p => ({ x: p.center.x + p.normal.x * p.radius * amount, y: p.center.y + p.normal.y * p.radius * amount })));
+    const rings = [2, 4, 7, 10, 13].map(i => {
+      const p = h.sections[i], inner = { x: p.center.x - p.normal.x * p.radius * .9, y: p.center.y - p.normal.y * p.radius * .9 },
+        outer = { x: p.center.x + p.normal.x * p.radius * .9, y: p.center.y + p.normal.y * p.radius * .9 };
+      return `<path d="M${point(inner)}Q${p.center.x + p.normal.y * 3} ${p.center.y - p.normal.x * 3} ${point(outer)}" fill="none" stroke="#9b8965" stroke-width="1" opacity=".45"/>`;
+    }).join('');
+    const base = h.sections.slice(0, 2).map(p => ({ x: p.center.x + p.normal.x * p.radius * .65, y: p.center.y + p.normal.y * p.radius * .65 }));
+    return `<path d="${outline}" transform="translate(2 4)" fill="#102e3a" opacity=".45"/>
+      <path d="${outline}" fill="url(#bone)" stroke="#39494a" stroke-width="1.6" stroke-linejoin="round"/>
+      <path d="${path(shade)}Z" fill="#867550" opacity=".22"/>
+      <path d="${path(ridge)}" fill="none" stroke="#fff4d8" stroke-width="1.7" stroke-linecap="round" opacity=".75"/>
+      <path d="${path(base)}" fill="none" stroke="#8e7855" stroke-width="2" opacity=".5"/>${rings}`;
+  }).join('');
 }
 
 export function drawBody(c: CanvasRenderingContext2D): void {
   paint(c, 'body', body, -280, 20, 560, 940);
+}
+
+export function drawHead(c: CanvasRenderingContext2D): void {
   paint(c, 'face', face, -255, -40, 510, 210);
 }
 
 export function drawHorns(c: CanvasRenderingContext2D, mutations: MutationId[]): void {
-  const key = mutations.filter(m => ['curl', 'heavy-horn', 'branch'].includes(m)).sort().join();
-  paint(c, `horn-${key}`, () => hornArt(mutations), -240, -110, 480, 225);
+  const key = mutations.filter(m => ['curl', 'heavy-horn', 'branch', 'ram-horn', 'crown'].includes(m)).sort().join();
+  paint(c, `horn-${key}`, () => hornArt(mutations), -270, -225, 540, 350);
 }
 
-export function drawJaw(c: CanvasRenderingContext2D, wide: boolean, opening: number): void {
-  c.save(); c.translate(0, -opening * .5); c.scale(wide ? 1.3 : 1, 1);
-  const markup = `<path d="M-82 1Q-85-28-59-33Q0-44 59-33Q85-28 82 1Q64 22 0 26Q-64 22-82 1Z" fill="#142f3a" transform="translate(1 6)"/>
-    <path d="M-82 1Q-85-28-59-33Q0-44 59-33Q85-28 82 1Q64 22 0 26Q-64 22-82 1Z" fill="url(#brow)" stroke="#233e45" stroke-width="2.2"/>
-    <path d="M-57-27Q0-40 57-27" fill="none" stroke="#b2c6aa" stroke-opacity=".55" stroke-width="2"/>
-    <path d="M-80-1Q-38 14 0 12Q38 14 80-1" stroke="#122b32" fill="none" stroke-width="3"/>
-    <path d="M-48-21Q-57-27-62-18Q-60-11-48-15ZM48-21Q57-27 62-18Q60-11 48-15Z" fill="#234149"/>
-    <path d="M-65-19l9-3m47-7 3 5m58 2-9-3" stroke="#a4b5a0" stroke-opacity=".4" fill="none"/>
-    <path d="M-72 5Q-70 21-63 24L-57 9ZM72 5Q70 21 63 24L57 9Z" fill="url(#bone)" stroke="#34514e" stroke-width="1"/>
-    <path d="M-33 8l2 6 5-5m59-1-2 6-5-5" fill="#dcd4b5"/>`;
-  paint(c, 'jaw', markup, -95, -50, 190, 95);
+export function drawJaw(c: CanvasRenderingContext2D, mutations: MutationId[], opening: number): void {
+  const shape = jawShape(mutations), w = shape[1].x * -1, crusher = mutations.includes('crusher');
+  c.save(); c.translate(0, -opening);
+  const path = `M${shape.map(p => `${p.x} ${p.y}`).join('L')}Z`;
+  let markup = `<path d="${path}" transform="translate(0 6)" fill="#102a32"/>
+    <path d="${path}" fill="url(#brow)" stroke="#233e45" stroke-width="${crusher ? 4 : 2}" stroke-linejoin="round"/>
+    <path d="M${-w + 8}-33Q0-56 ${w - 8}-33" fill="none" stroke="#b2c6aa" opacity=".6" stroke-width="2"/>
+    <path d="M${-w + 5} 4Q0 20 ${w - 5} 4" stroke="#102a32" fill="none" stroke-width="3"/>`;
+  for (let x = -w + 10; x < w; x += crusher ? 26 : 20) {
+    markup += `<path d="M${x}-35l${crusher ? 15 : 9} 0 -5 -10Z" fill="url(#bone)" stroke="#34514e" stroke-width="1"/>`;
+  }
+  markup += `<path d="M-27-21l9-4m36 0 9 4" stroke="#8ba596" stroke-width="2"/>`;
+  paint(c, `jaw-${w}-${crusher}`, markup, -150, -65, 300, 100);
   c.restore();
 }
