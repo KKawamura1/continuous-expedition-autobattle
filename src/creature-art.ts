@@ -1,4 +1,4 @@
-import { hornShapes, jawShape } from './body-physics';
+import { hornGeometry, jawShape } from './body-physics';
 import type { MutationId } from './types';
 
 // Original vector artwork, rasterized once at 2×. The moving parts remain separate
@@ -99,16 +99,26 @@ const face = (() => {
 })();
 
 function hornArt(mutations: MutationId[]): string {
-  return hornShapes(mutations).map(shape => {
-    const path = `M${shape.map(p => `${p.x} ${p.y}`).join('L')}Z`;
-    const [tip, inner] = shape, root = shape[3] ?? shape[2];
-    const ribs = [ .2, .4, .6, .8 ].map(t => {
-      const x = tip.x + (inner.x - tip.x) * t, y = tip.y + (inner.y - tip.y) * t;
-      return `<path d="M${x} ${y}q${Math.sign(x) * 10} 8 ${Math.sign(x) * 16} 17" stroke="#827d63" stroke-width="1.4" fill="none" opacity=".55"/>`;
+  const horns = hornGeometry(mutations);
+  const point = (p: { x: number; y: number }) => `${p.x.toFixed(2)} ${p.y.toFixed(2)}`;
+  const path = (points: { x: number; y: number }[]) => `M${points.map(point).join('L')}`;
+  // All sockets sit below the horns; small branches grow directly out of the main horn.
+  const sockets = [-1, 1].map(side => `<ellipse cx="${side * 133}" cy="80" rx="32" ry="21" fill="url(#plate)" stroke="#203b43" stroke-width="2"/>`).join('');
+  return sockets + horns.map(h => {
+    const outline = path(h.outline) + 'Z';
+    const ridge = h.sections.map(p => ({ x: p.center.x - p.normal.x * p.radius * .28, y: p.center.y - p.normal.y * p.radius * .28 }));
+    const shade = [.3, .8].flatMap((amount, i) => (i ? [...h.sections].reverse() : h.sections).map(p => ({ x: p.center.x + p.normal.x * p.radius * amount, y: p.center.y + p.normal.y * p.radius * amount })));
+    const rings = [2, 4, 7, 10, 13].map(i => {
+      const p = h.sections[i], inner = { x: p.center.x - p.normal.x * p.radius * .9, y: p.center.y - p.normal.y * p.radius * .9 },
+        outer = { x: p.center.x + p.normal.x * p.radius * .9, y: p.center.y + p.normal.y * p.radius * .9 };
+      return `<path d="M${point(inner)}Q${p.center.x + p.normal.y * 3} ${p.center.y - p.normal.x * 3} ${point(outer)}" fill="none" stroke="#9b8965" stroke-width="1" opacity=".45"/>`;
     }).join('');
-    return `<ellipse cx="${Math.sign(tip.x) * 133}" cy="76" rx="30" ry="17" fill="url(#plate)" stroke="#203b43" stroke-width="2"/><path d="${path}" transform="translate(3 5)" fill="#102e3a" opacity=".6"/>
-      <path d="${path}" fill="url(#bone)" stroke="#30454a" stroke-width="2.2" stroke-linejoin="round"/>
-      <path d="M${tip.x} ${tip.y}L${inner.x} ${inner.y}L${root.x} ${root.y}" fill="none" stroke="#fff2d2" stroke-width="2.5" stroke-linejoin="round" opacity=".65"/>${ribs}`;
+    const base = h.sections.slice(0, 2).map(p => ({ x: p.center.x + p.normal.x * p.radius * .65, y: p.center.y + p.normal.y * p.radius * .65 }));
+    return `<path d="${outline}" transform="translate(2 4)" fill="#102e3a" opacity=".45"/>
+      <path d="${outline}" fill="url(#bone)" stroke="#39494a" stroke-width="1.6" stroke-linejoin="round"/>
+      <path d="${path(shade)}Z" fill="#867550" opacity=".22"/>
+      <path d="${path(ridge)}" fill="none" stroke="#fff4d8" stroke-width="1.7" stroke-linecap="round" opacity=".75"/>
+      <path d="${path(base)}" fill="none" stroke="#8e7855" stroke-width="2" opacity=".5"/>${rings}`;
   }).join('');
 }
 
@@ -122,7 +132,7 @@ export function drawHead(c: CanvasRenderingContext2D): void {
 
 export function drawHorns(c: CanvasRenderingContext2D, mutations: MutationId[]): void {
   const key = mutations.filter(m => ['curl', 'heavy-horn', 'branch', 'ram-horn', 'crown'].includes(m)).sort().join();
-  paint(c, `horn-${key}`, () => hornArt(mutations), -260, -220, 520, 325);
+  paint(c, `horn-${key}`, () => hornArt(mutations), -270, -225, 540, 350);
 }
 
 export function drawJaw(c: CanvasRenderingContext2D, mutations: MutationId[], opening: number): void {

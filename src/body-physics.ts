@@ -8,23 +8,52 @@ export function skinShape(m: MutationId[]): Point[] {
   const front = Array.from({ length: 24 }, (_, i) => { const x = -230 + i * 20; return { x, y: skinEdge(x, m) }; });
   return [...front, { x: 230, y: 170 }, { x: -230, y: 170 }];
 }
-/** The exposed diagonal faces funnel incoming bodies toward the mouth. Same polygons in art and collision. */
-export function hornShapes(m: MutationId[]): Point[][] {
+export interface HornSection { center: Point; normal: Point; radius: number }
+export interface Horn { outline: Point[]; sections: HornSection[] }
+const hornCache = new Map<string, Horn[]>();
+/** A round root tapers along a curved centerline into a single sharp tip. */
+function curvedHorn(root: Point, a: Point, b: Point, tip: Point, width: number): Horn {
+  const sections = Array.from({ length: 21 }, (_, i) => {
+    const t = i / 20, u = 1 - t;
+    const center = { x: u ** 3 * root.x + 3 * u * u * t * a.x + 3 * u * t * t * b.x + t ** 3 * tip.x,
+      y: u ** 3 * root.y + 3 * u * u * t * a.y + 3 * u * t * t * b.y + t ** 3 * tip.y };
+    const dx = 3 * u * u * (a.x - root.x) + 6 * u * t * (b.x - a.x) + 3 * t * t * (tip.x - b.x);
+    const dy = 3 * u * u * (a.y - root.y) + 6 * u * t * (b.y - a.y) + 3 * t * t * (tip.y - b.y), length = Math.hypot(dx, dy);
+    return { center, normal: { x: -dy / length, y: dx / length }, radius: width * (1 - t) ** .9 };
+  });
+  const edge = (section: HornSection, side: number) => ({ x: section.center.x + section.normal.x * section.radius * side,
+    y: section.center.y + section.normal.y * section.radius * side });
+  const first = sections[0], tangent = { x: first.normal.y, y: -first.normal.x };
+  const cap = Array.from({ length: 7 }, (_, i) => {
+    const angle = (i + 1) / 8 * Math.PI;
+    return { x: root.x - first.normal.x * width * Math.cos(angle) - tangent.x * width * Math.sin(angle),
+      y: root.y - first.normal.y * width * Math.cos(angle) - tangent.y * width * Math.sin(angle) };
+  });
+  return { sections, outline: [tip, ...sections.slice(0, -1).reverse().map(p => edge(p, -1)), ...cap,
+    ...sections.slice(0, -1).map(p => edge(p, 1))] };
+}
+/** The visible tapered curves are also the solid collision outlines. */
+export function hornGeometry(m: MutationId[]): Horn[] {
+  const key = m.filter(id => ['heavy-horn', 'ram-horn', 'curl', 'branch', 'crown'].includes(id)).sort().join();
+  const cached = hornCache.get(key); if (cached) return cached;
   const heavy = has(m, 'heavy-horn'), ram = has(m, 'ram-horn'), curl = has(m, 'curl');
   const reach = ram ? 200 : heavy ? 162 : curl ? 139 : 108;
-  // Tips extend beyond the battlefield sides; incoming bodies meet the inner face.
+  // The pointed ends reach past the sides; incoming enemies stay between the two horns.
   const outer = ram ? 244 : heavy ? 236 : 228;
-  const inner = heavy || curl ? 45 : 90;
-  const right: Point[][] = [[{ x: outer, y: -reach }, { x: inner, y: -13 },
-    { x: 104, y: 58 }, { x: 116, y: 78 }, { x: 139, y: 84 }, { x: 161, y: 67 },
-    { x: heavy ? 141 : 126, y: 12 }, { x: outer - 14, y: -reach * .55 }]];
-  if (curl) right.push([{ x: inner, y: -13 }, { x: 38, y: 24 }, { x: 66, y: 12 }, { x: 83, y: -3 }]);
+  const right = [curvedHorn({ x: 133, y: 76 }, { x: curl ? 24 : 52, y: -5 },
+    { x: curl ? 125 : 172, y: -reach * .45 }, { x: outer, y: -reach }, ram ? 36 : heavy ? 30 : 22)];
   if (has(m, 'branch')) {
-    right.push([{ x: 139, y: 22 }, { x: 190, y: -72 }, { x: 183, y: 26 }, { x: 151, y: 53 }]);
-    if (has(m, 'crown')) right.push([{ x: 116, y: 40 }, { x: 67, y: -77 }, { x: 75, y: 35 }, { x: 135, y: 70 }]);
+    right.push(curvedHorn({ x: 151, y: 48 }, { x: 157, y: 7 }, { x: 188, y: -36 }, { x: 199, y: -97 }, 13));
+    if (has(m, 'crown')) right.push(curvedHorn({ x: 124, y: 65 }, { x: 100, y: 30 }, { x: 90, y: -36 }, { x: 67, y: -97 }, 14));
   }
-  return [-1, 1].flatMap(side => right.map(shape => shape.map(p => ({ x: p.x * side, y: p.y }))));
+  const horns = [-1, 1].flatMap(side => right.map(h => ({
+    outline: h.outline.map(p => ({ x: p.x * side, y: p.y })),
+    sections: h.sections.map(p => ({ center: { x: p.center.x * side, y: p.center.y },
+      normal: { x: p.normal.x * side, y: p.normal.y }, radius: p.radius }))
+  })));
+  hornCache.set(key, horns); return horns;
 }
+export function hornShapes(m: MutationId[]): Point[][] { return hornGeometry(m).map(h => h.outline); }
 export function jawWidth(m: MutationId[]): number { return has(m, 'wide-jaw') ? 135 : 65; }
 export function jawShape(m: MutationId[]): Point[] {
   const w = jawWidth(m);

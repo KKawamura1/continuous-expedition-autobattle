@@ -22,17 +22,17 @@ test('heavy contact makes actual progress retreat and sustained pressure can sto
   const s=running();s.distance=100;s.bite=10;s.sweep=10;for(let i=0;i<16;i++)spawnEnemy(s,'boar',-170+i*22,100);advance(s,3);assert(s.distance<100);assert(s.health<MAX_HEALTH);assert(s.speed<0);
   s.health=.01;spawnEnemy(s,'boar',0,s.distance);step(s,.05);assert.equal(s.mode,'fallen');assert.equal(s.speed,0);
 });
-test('horns exert no attraction before contact, then slide bodies inward along both diagonal faces',()=>{
+test('horns exert no attraction before contact, then slide bodies inward along both curved faces',()=>{
   for(const side of [-1,1]) {
     const s=running();s.mutations=['heavy-horn'];s.bite=s.sweep=10;
     const e=spawnEnemy(s,'boar',side*130,60);step(s,.05);assert.equal(e.vx,0);assert.equal(e.x,side*130);
-    e.y=24;e.vy=-12;advance(s,.2);assert(Math.abs(e.x)<130);assert(e.vx*side<0);
+    e.y=22;e.vy=-12;advance(s,.2);assert(Math.abs(e.x)<130);assert(e.vx*side<0);
     assert(!s.effects.some(f=>f.type==='pull'));assert(s.effects.some(f=>f.type==='sweep'&&f.targetId===e.id));
   }
 });
 test('identical contact transfers less momentum to heavier bodies',()=>{
   const a=running(),b=running();a.mutations=b.mutations=['heavy-horn'];a.bite=b.bite=a.sweep=b.sweep=10;
-  const ea=spawnEnemy(a,'boar',130,24),eb=spawnEnemy(b,'boar',130,24);ea.mass=.65;ea.vy=eb.vy=-12;
+  const ea=spawnEnemy(a,'boar',130,22),eb=spawnEnemy(b,'boar',130,22);ea.mass=.65;ea.vy=eb.vy=-12;
   advance(a,.15);advance(b,.15);assert(ea.vx<eb.vx);assert(ea.x<eb.x);
 });
 test('wide jaw bites enemies outside the normal jaw',()=>{
@@ -74,7 +74,7 @@ test('branches reject incompatible purchases and deep mutations require their pa
   const reverse=running();reverse.mode='body';reverse.growth=100;assert(mutate(reverse,'branch'));assert(!mutate(reverse,'heavy-horn'));
 });
 test('battle feedback describes real targets and distinguishes collision from scale rebound',()=>{
-  const horn=running();horn.mutations=['heavy-horn'];horn.bite=horn.sweep=10;const victim=spawnEnemy(horn,'boar',130,24);victim.vy=-12;advance(horn,.2);
+  const horn=running();horn.mutations=['heavy-horn'];horn.bite=horn.sweep=10;const victim=spawnEnemy(horn,'boar',130,22);victim.vy=-12;advance(horn,.2);
   assert(horn.effects.some(e=>e.type==='sweep'&&e.source==='heavy-horn'&&e.targetId===victim.id));
   assert(!horn.effects.some(e=>e.type==='pull'));
   const bite=running();bite.bite=0;bite.sweep=10;const target=spawnEnemy(bite,'boar',0,8);step(bite,.05);
