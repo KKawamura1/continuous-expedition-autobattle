@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { advance, collide, cost, createState, depart, mutate, spawnEnemy, start, step, unlock } from '../src/simulation.ts';
 import { decode, encode } from '../src/save.ts';
-import { headMotion, headPoint, headVelocity, hornShapes, jawShape, organOrigin, organTip, shapeContact, sweepPeriod } from '../src/body-physics.ts';
+import { hornShapes, jawShape, moveCircle, organTip, shapeContact, skinShape } from '../src/body-physics.ts';
 import { MAX_HEALTH, MUTATIONS } from '../src/content.ts';
 import type { MutationId } from '../src/types.ts';
 function running(){const s=createState();start(s);return s;}
@@ -26,13 +26,13 @@ test('horns exert no attraction before contact, then slide bodies inward along b
   for(const side of [-1,1]) {
     const s=running();s.mutations=['heavy-horn'];s.bite=s.sweep=10;
     const e=spawnEnemy(s,'boar',side*130,60);step(s,.05);assert.equal(e.vx,0);assert.equal(e.x,side*130);
-    e.y=28;e.vy=-12;advance(s,.2);assert(Math.abs(e.x)<130);assert(e.vx*side<0);
+    e.y=24;e.vy=-12;advance(s,.2);assert(Math.abs(e.x)<130);assert(e.vx*side<0);
     assert(!s.effects.some(f=>f.type==='pull'));assert(s.effects.some(f=>f.type==='sweep'&&f.targetId===e.id));
   }
 });
 test('identical contact transfers less momentum to heavier bodies',()=>{
   const a=running(),b=running();a.mutations=b.mutations=['heavy-horn'];a.bite=b.bite=a.sweep=b.sweep=10;
-  const ea=spawnEnemy(a,'boar',130,28),eb=spawnEnemy(b,'boar',130,28);ea.mass=.65;ea.vy=eb.vy=-12;
+  const ea=spawnEnemy(a,'boar',130,24),eb=spawnEnemy(b,'boar',130,24);ea.mass=.65;ea.vy=eb.vy=-12;
   advance(a,.15);advance(b,.15);assert(ea.vx<eb.vx);assert(ea.x<eb.x);
 });
 test('wide jaw bites enemies outside the normal jaw',()=>{
@@ -74,7 +74,7 @@ test('branches reject incompatible purchases and deep mutations require their pa
   const reverse=running();reverse.mode='body';reverse.growth=100;assert(mutate(reverse,'branch'));assert(!mutate(reverse,'heavy-horn'));
 });
 test('battle feedback describes real targets and distinguishes collision from scale rebound',()=>{
-  const horn=running();horn.mutations=['heavy-horn'];horn.bite=horn.sweep=10;const victim=spawnEnemy(horn,'boar',130,28);victim.vy=-12;advance(horn,.2);
+  const horn=running();horn.mutations=['heavy-horn'];horn.bite=horn.sweep=10;const victim=spawnEnemy(horn,'boar',130,24);victim.vy=-12;advance(horn,.2);
   assert(horn.effects.some(e=>e.type==='sweep'&&e.source==='heavy-horn'&&e.targetId===victim.id));
   assert(!horn.effects.some(e=>e.type==='pull'));
   const bite=running();bite.bite=0;bite.sweep=10;const target=spawnEnemy(bite,'boar',0,8);step(bite,.05);
@@ -90,7 +90,7 @@ test('expensive deep mutations change damage, reach and push rather than only th
   const short=running(),long=running();short.mutations=['tentacle'];long.mutations=['tentacle','long-tentacle'];short.bite=long.bite=short.sweep=long.sweep=10;
   const ea=spawnEnemy(short,'boar',140,70),eb=spawnEnemy(long,'boar',140,70);step(short,.05);step(long,.05);assert.equal(eb.vx,ea.vx);assert.equal(eb.vx,0);assert(long.effects.some(f=>f.source==='tentacle'&&!f.attached));advance(short,.8);advance(long,.8);assert(eb.vx<ea.vx);assert(eb.y<ea.y);
   const light=running(),heavy=running();light.mutations=['heavy-horn'];heavy.mutations=['heavy-horn','ram-horn'];light.bite=heavy.bite=10;light.sweep=heavy.sweep=10;
-  const el=spawnEnemy(light,'boar',160,39),eh=spawnEnemy(heavy,'boar',160,39);el.vy=eh.vy=-20;step(light,.05);step(heavy,.05);assert(eh.hp<el.hp);assert(eh.vy>el.vy);
+  const el=spawnEnemy(light,'boar',160,34),eh=spawnEnemy(heavy,'boar',160,34);el.vy=eh.vy=-20;step(light,.05);step(heavy,.05);assert(eh.hp<el.hp);assert(eh.vy>el.vy);
 });
 test('previous v2 saves migrate enemy HP capacity without changing current HP or legacy builds',()=>{
   const s=running();s.mutations=['heavy-horn','branch'];spawnEnemy(s,'boar',0,20);
@@ -134,27 +134,44 @@ test('extra tentacles are distinct material arms with at most one capture per ar
 });
 
 
-test('horn roots, eyes and jaw keep their relative attachment distances as the neck turns the whole skull',()=>{
-  const s=running();s.mutations=['heavy-horn'];
-  const landmarks=[{x:-133,y:76},{x:133,y:76},{x:-168,y:69},{x:168,y:69},{x:0,y:0}];
-  for(const fraction of [.25,.5,.75,1]) {
-    s.sweep=sweepPeriod(s.mutations)*fraction;
-    const world=landmarks.map(p=>headPoint(s,p));
-    for(let i=0;i<landmarks.length;i++)for(let j=i+1;j<landmarks.length;j++) {
-      assert(Math.abs(Math.hypot(world[i].x-world[j].x,world[i].y-world[j].y)-Math.hypot(landmarks[i].x-landmarks[j].x,landmarks[i].y-landmarks[j].y))<1e-9);
-    }
-    const tongue=organOrigin({type:'pull',source:'tongue',x:0,y:0,life:1,maxLife:1},s);
-    assert.deepEqual(tongue,headPoint(s,{x:0,y:12}));
-  }
-  s.sweep=sweepPeriod(s.mutations);
-  const left=headVelocity(s,headPoint(s,landmarks[0])),right=headVelocity(s,headPoint(s,landmarks[1]));
-  assert(left.y<0&&right.y>0);assert.equal(left.x,right.x);
-  s.mode='body';const pose=headMotion(s);advance(s,2);assert.deepEqual(headMotion(s),pose);
+test('stationary horns have no periodic impact on a resting enemy',()=>{
+  const s=running();s.mutations=['heavy-horn'];s.bite=10;s.sweep=0;s.spawn=-100;
+  const e=spawnEnemy(s,'boar',130,70);e.speed=0;e.vy=0;
+  const horns=hornShapes(s.mutations);advance(s,2);
+  assert.deepEqual(hornShapes(s.mutations),horns);assert.equal(e.x,130);assert.equal(e.vx,0);assert.equal(e.vy,0);assert.equal(e.hp,e.maxHp);
+  assert(!s.effects.some(f=>f.type==='sweep'));
 });
-test('jaw collision turns with the visible skull rather than staying at its old screen position',()=>{
-  const s=running();s.mutations=['wide-jaw'];s.bite=0;s.sweep=sweepPeriod(s.mutations)*.75;
-  const p={x:144,y:-24};assert(!shapeContact(p,8,jawShape(s.mutations)));
-  assert(shapeContact(p,8,jawShape(s.mutations).map(v=>headPoint(s,v))));
-  const e=spawnEnemy(s,'beetle',p.x,-p.y/4);step(s,.01);
-  assert(s.effects.some(f=>f.type==='bite'&&f.targetId===e.id));
+test('fast movement cannot cross either horn and tips close the outer route in every shape',()=>{
+  for(const mutations of [[],['heavy-horn'],['curl'],['branch'],['branch','crown'],['heavy-horn','ram-horn']] as MutationId[][])for(const side of [-1,1]) {
+    const shapes=hornShapes(mutations);
+    const result=moveCircle({x:side*180,y:-300},{x:side*180,y:60},8,shapes);
+    assert(result.contacts.length>0);
+    assert(Math.abs(result.point.x)<180,`${mutations}: should slide inward`);
+    assert(!shapes.some(shape=>shapeContact(result.point,7.999,shape)));
+    // An entire thin branch can be crossed within a single tick; the first surface still blocks it.
+    const s=running();s.mutations=mutations;s.bite=10;const e=spawnEnemy(s,'boar',side*180,55);e.hp=1e6;e.vy=-1000;
+    step(s,.05);assert(Math.abs(e.x)<180);
+    assert(!shapes.some(shape=>shapeContact({x:e.x,y:-(e.y-s.distance)*4},e.radius-.001,shape)));
+  }
+});
+test('dense enemy separation never leaves a body inside or behind a horn face',()=>{
+  for(const side of [-1,1]) {
+    const s=running();s.mutations=['heavy-horn'];s.bite=10;s.spawn=-100;
+    for(let i=0;i<20;i++){const e=spawnEnemy(s,'boar',side*(135+i%4*10),45+Math.floor(i/4)*4);e.hp=1e6;}
+    const horns=hornShapes(s.mutations),surfaces=[...horns,skinShape(s.mutations)];
+    for(let tick=0;tick<100;tick++) {
+      step(s,.02);
+      for(const e of s.enemies) {
+        const point={x:e.x,y:-(e.y-s.distance)*4};
+        assert(!surfaces.some(shape=>shapeContact(point,e.radius-.001,shape)),`tick ${tick}: ${JSON.stringify(point)}`);
+        // Between the horn's tip and elbow, every enemy remains on the inward side of its leading face.
+        if(point.y>=-162&&point.y<=-13)assert(Math.abs(point.x)<=45+(-13-point.y)*191/149+.001);
+      }
+    }
+  }
+});
+test('front muscles increase whole-body travel speed without a head attack timer',()=>{
+  const a=running(),b=running(),c=running();b.mutations=['fast'];c.mutations=['fast','rapid-neck'];
+  for(const s of [a,b,c]){s.spawn=-100;advance(s,3);}
+  assert(b.distance>a.distance);assert(c.distance>b.distance);
 });

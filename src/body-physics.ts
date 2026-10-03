@@ -4,28 +4,6 @@ import type { Effect, MutationId, State } from './types';
 /** Local artwork coordinates: x points right, y points back down the body, in pixels. */
 export interface Point { x: number; y: number }
 export interface Contact { x: number; y: number; nx: number; ny: number; depth: number }
-export function sweepPeriod(m: MutationId[]): number {
-  return (has(m, 'fast') ? .62 : 1.15) * (has(m, 'heavy-horn') ? 1.28 : 1) *
-    (has(m, 'heavy-neck') ? 1.2 : 1) * (has(m, 'ram-horn') ? 1.1 : 1) * (has(m, 'rapid-neck') ? .72 : 1);
-}
-export const NECK_PIVOT: Point = { x: 0, y: 140 };
-/** Both horns, the eyes, jaw and front scales are rigid parts of one head. */
-export function headMotion(s: State): { angle: number; omega: number } {
-  const period = sweepPeriod(s.mutations);
-  if (s.sweep > period) return { angle: 0, omega: 0 };
-  const phase = Math.max(0, 1 - s.sweep / period) * Math.PI * 2;
-  const amplitude = has(s.mutations, 'heavy-neck') ? .045 : .075;
-  return { angle: Math.sin(phase) * amplitude, omega: Math.cos(phase) * amplitude * Math.PI * 2 / period };
-}
-export function headPoint(s: State, p: Point): Point {
-  const { angle } = headMotion(s), cos = Math.cos(angle), sin = Math.sin(angle), y = p.y - NECK_PIVOT.y;
-  return { x: p.x * cos - y * sin, y: NECK_PIVOT.y + p.x * sin + y * cos };
-}
-/** Pixel velocity of a point fixed to the rotating head, relative to forward travel. */
-export function headVelocity(s: State, p: Point): Point {
-  const { omega } = headMotion(s);
-  return { x: -(p.y - NECK_PIVOT.y) * omega, y: p.x * omega };
-}
 export function skinShape(m: MutationId[]): Point[] {
   const front = Array.from({ length: 24 }, (_, i) => { const x = -230 + i * 20; return { x, y: skinEdge(x, m) }; });
   return [...front, { x: 230, y: 170 }, { x: -230, y: 170 }];
@@ -33,8 +11,9 @@ export function skinShape(m: MutationId[]): Point[] {
 /** The exposed diagonal faces funnel incoming bodies toward the mouth. Same polygons in art and collision. */
 export function hornShapes(m: MutationId[]): Point[][] {
   const heavy = has(m, 'heavy-horn'), ram = has(m, 'ram-horn'), curl = has(m, 'curl');
-  const reach = ram ? 167 : heavy ? 135 : curl ? 116 : 90;
-  const outer = ram ? 188 : heavy ? 183 : 178;
+  const reach = ram ? 200 : heavy ? 162 : curl ? 139 : 108;
+  // Tips extend beyond the battlefield sides; incoming bodies meet the inner face.
+  const outer = ram ? 244 : heavy ? 236 : 228;
   const inner = heavy || curl ? 45 : 90;
   const right: Point[][] = [[{ x: outer, y: -reach }, { x: inner, y: -13 },
     { x: 104, y: 58 }, { x: 116, y: 78 }, { x: 139, y: 84 }, { x: 161, y: 67 },
@@ -69,12 +48,62 @@ export function shapeContact(p: Point, radius: number, shape: Point[]): Contact 
   else { const length = Math.hypot(edge.x, edge.y); nx = edge.y / length * Math.sign(area); ny = -edge.x / length * Math.sign(area); }
   return { ...hit, nx, ny, depth: inside ? radius + best : radius - best };
 }
-export function organOrigin(f: Effect, s: State): Point {
-  return f.source === 'tongue' ? headPoint(s, { x: 0, y: 12 }) : { x: Math.sign(f.x) * (f.strength === 2 ? 105 : 88), y: 125 };
+/** First contact along the entire movement, including the radius around corners. */
+function sweptContact(from: Point, delta: Point, radius: number, shape: Point[]): (Contact & { t: number }) | null {
+  let first: (Contact & { t: number }) | null = null;
+  const area = shape.reduce((sum, a, i) => { const b = shape[(i + 1) % shape.length]; return sum + a.x * b.y - b.x * a.y; }, 0);
+  const accept = (t: number, x: number, y: number, nx: number, ny: number) => {
+    if (t >= 0 && t <= 1 && (!first || t < first.t) && delta.x * nx + delta.y * ny < -1e-8)
+      first = { t, x, y, nx, ny, depth: 0 };
+  };
+  for (let i = 0; i < shape.length; i++) {
+    const a = shape[i], b = shape[(i + 1) % shape.length], ex = b.x - a.x, ey = b.y - a.y;
+    const length = Math.hypot(ex, ey), nx = ey / length * Math.sign(area), ny = -ex / length * Math.sign(area);
+    const distance = (from.x - a.x) * nx + (from.y - a.y) * ny, speed = delta.x * nx + delta.y * ny;
+    if (speed < -1e-8 && distance >= radius - 1e-8) {
+      const t = (radius - distance) / speed, x = from.x + delta.x * t - nx * radius, y = from.y + delta.y * t - ny * radius;
+      const along = ((x - a.x) * ex + (y - a.y) * ey) / (length * length);
+      if (along >= 0 && along <= 1) accept(t, x, y, nx, ny);
+    }
+    const dx = from.x - a.x, dy = from.y - a.y, aa = delta.x * delta.x + delta.y * delta.y;
+    const bb = 2 * (dx * delta.x + dy * delta.y), cc = dx * dx + dy * dy - radius * radius, discriminant = bb * bb - 4 * aa * cc;
+    if (aa > 1e-8 && cc >= -1e-8 && discriminant >= 0) {
+      const t = (-bb - Math.sqrt(discriminant)) / (2 * aa);
+      accept(t, a.x, a.y, (dx + delta.x * t) / radius, (dy + delta.y * t) / radius);
+    }
+  }
+  return first;
+}
+/** Slide a solid circle along surfaces, without letting a fast step cross to the far side. */
+export function moveCircle(from: Point, to: Point, radius: number, shapes: Point[][]): { point: Point; contacts: Contact[] } {
+  let point = { ...from }, delta = { x: to.x - from.x, y: to.y - from.y };
+  const contacts: Contact[] = [];
+  // Repair initial overlap (including old saves and newly enlarged horns) before tracing movement.
+  for (let pass = 0; pass < 4; pass++) for (const shape of shapes) {
+    const hit = shapeContact(point, radius, shape);
+    if (hit) { point.x += hit.nx * (hit.depth + .001); point.y += hit.ny * (hit.depth + .001); contacts.push(hit); }
+  }
+  for (let pass = 0; pass < 8; pass++) {
+    let first: (Contact & { t: number }) | null = null;
+    for (const shape of shapes) {
+      const hit = sweptContact(point, delta, radius, shape);
+      if (hit && (!first || hit.t < first.t)) first = hit;
+    }
+    if (!first) { point.x += delta.x; point.y += delta.y; break; }
+    point.x += delta.x * first.t + first.nx * .001; point.y += delta.y * first.t + first.ny * .001;
+    delta = { x: delta.x * (1 - first.t), y: delta.y * (1 - first.t) };
+    const inward = Math.min(0, delta.x * first.nx + delta.y * first.ny);
+    delta.x -= first.nx * inward; delta.y -= first.ny * inward;
+    contacts.push(first);
+  }
+  return { point, contacts };
+}
+export function organOrigin(f: Effect): Point {
+  return f.source === 'tongue' ? { x: 0, y: 12 } : { x: Math.sign(f.x) * (f.strength === 2 ? 105 : 88), y: 125 };
 }
 /** A material tip extends to its aimed position, then retracts; no remote force during extension. */
 export function organRestTip(f: Effect, s: State): Point {
-  const origin = organOrigin(f, s), age = f.maxLife - f.life;
+  const origin = organOrigin(f), age = f.maxLife - f.life;
   const reach = age < .3 ? age / .3 : age < .48 ? 1 : Math.max(0, (f.maxLife - age) / (f.maxLife - .48));
   return { x: origin.x + ((f.targetX ?? 0) - origin.x) * reach,
     y: origin.y + (-( (f.targetY ?? s.distance) - s.distance) * WORLD_SCALE - origin.y) * reach };

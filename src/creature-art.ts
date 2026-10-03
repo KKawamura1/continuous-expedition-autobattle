@@ -122,7 +122,7 @@ export function drawHead(c: CanvasRenderingContext2D): void {
 
 export function drawHorns(c: CanvasRenderingContext2D, mutations: MutationId[]): void {
   const key = mutations.filter(m => ['curl', 'heavy-horn', 'branch', 'ram-horn', 'crown'].includes(m)).sort().join();
-  paint(c, `horn-${key}`, () => hornArt(mutations), -220, -185, 440, 290);
+  paint(c, `horn-${key}`, () => hornArt(mutations), -260, -220, 520, 325);
 }
 
 export function drawJaw(c: CanvasRenderingContext2D, mutations: MutationId[], opening: number): void {

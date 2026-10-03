@@ -21,7 +21,7 @@ export function battleEffects(c: CanvasRenderingContext2D, s: State, head: numbe
   }
   for (const f of s.effects) {
     if (f.type === 'pull') {
-      organ(c, organOrigin(f, s), organTip(f, s), head, f.source === 'tongue', s.mutations.includes('barbed-tongue') && f.source === 'tongue');
+      organ(c, organOrigin(f), organTip(f, s), head, f.source === 'tongue', s.mutations.includes('barbed-tongue') && f.source === 'tongue');
       continue;
     }
     // A little sand at material impacts. No target rings, direction arrows or skill-colored trails.
